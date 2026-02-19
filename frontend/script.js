@@ -5,8 +5,11 @@ const metaApiBase = document
 
 const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai-backend.onrender.com";
 const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const isRelativeMeta = !!metaApiBase && metaApiBase.startsWith("/");
+
 const fallbackApiBase = isLocalHost ? "http://localhost:10000" : DEFAULT_DEPLOYED_API_BASE_URL;
-const API_BASE_URL = window.VISIONSORT_API_BASE_URL || metaApiBase || fallbackApiBase;
+const apiBaseFromMeta = isLocalHost && isRelativeMeta ? "" : metaApiBase;
+const API_BASE_URL = window.VISIONSORT_API_BASE_URL || apiBaseFromMeta || fallbackApiBase;
 
 const uploadButton = document.getElementById("uploadButton");
 const inputEl = document.getElementById("imageInput");
@@ -137,7 +140,7 @@ async function uploadImages() {
     renderResults(data);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected upload error.";
-    renderError(message);
+    renderError(`${message} (API: ${API_BASE_URL})`);
   } finally {
     setLoading(false);
   }
