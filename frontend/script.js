@@ -100,6 +100,25 @@ function renderResults(data) {
   });
 }
 
+async function getResponseErrorMessage(response) {
+  const raw = await response.text();
+  if (!raw) {
+    return `Upload failed (${response.status})`;
+  }
+
+  try {
+    const payload = JSON.parse(raw);
+    if (payload && typeof payload.detail === "string" && payload.detail.trim()) {
+      return `Upload failed (${response.status}): ${payload.detail}`;
+    }
+  } catch {
+    // Fall through to raw text output.
+  }
+
+  const snippet = raw.length > 240 ? `${raw.slice(0, 240)}...` : raw;
+  return `Upload failed (${response.status}): ${snippet}`;
+}
+
 async function uploadImages() {
   const files = inputEl.files;
   if (!files || files.length === 0) {
@@ -121,19 +140,7 @@ async function uploadImages() {
     });
 
     if (!response.ok) {
-      let detail = `Upload failed (${response.status})`;
-      try {
-        const payload = await response.json();
-        if (payload && payload.detail) {
-          detail = `Upload failed (${response.status}): ${payload.detail}`;
-        }
-      } catch {
-        const text = await response.text();
-        if (text) {
-          detail = `Upload failed (${response.status}): ${text}`;
-        }
-      }
-      throw new Error(detail);
+      throw new Error(await getResponseErrorMessage(response));
     }
 
     const data = await response.json();
