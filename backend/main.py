@@ -70,6 +70,7 @@ aws_service = AWSService()
 
 
 @app.get("/")
+@app.get("/api")
 def root() -> Dict[str, Any]:
     """Health endpoint with non-sensitive service status."""
     return {
@@ -197,6 +198,7 @@ def persist_metadata(
 
 
 @app.post("/upload")
+@app.post("/api/upload")
 async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, List[Dict[str, Any]]]:
     """Process uploaded files and return categorized image payloads."""
     if not files:
