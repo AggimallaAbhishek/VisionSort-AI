@@ -1,221 +1,133 @@
-# 🚀 VisionSort AI  
-### Intelligent Photo Quality Assessment & Automatic Image Curation System
+# VisionSort AI
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-Backend-green)
-![OpenCV](https://img.shields.io/badge/OpenCV-ComputerVision-orange)
-![PyTorch](https://img.shields.io/badge/PyTorch-DeepLearning-red)
-![Supabase](https://img.shields.io/badge/Supabase-Database%20%26%20Storage-3ECF8E)
-![Vercel](https://img.shields.io/badge/Vercel-Frontend-black)
+VisionSort AI is a full-stack image quality pipeline that accepts batch uploads and automatically categorizes photos into:
 
-VisionSort AI is a full-stack web application that automatically analyzes and sorts uploaded photos based on image quality metrics such as blur detection, brightness evaluation, duplicate removal, and optional AI-based classification.
+- `good`
+- `blurry`
+- `dark`
+- `overexposed`
+- `duplicates`
 
-The system combines traditional Computer Vision techniques with Deep Learning to intelligently filter out low-quality images and return only the best photos.
+It uses FastAPI + OpenCV + optional PyTorch inference, stores assets/metadata in Supabase, and returns structured JSON for a static frontend.
 
----
+## Project Structure
 
-## ✨ Features
-
-- 📤 Multi-image upload support
-- 🔍 Blur detection using Variance of Laplacian
-- 🌗 Brightness & exposure analysis
-- ♻ Duplicate image detection (perceptual hashing)
-- 🤖 Optional CNN-based image quality classification
-- ☁ Cloud storage with Supabase
-- ⚡ Full-stack deployment (Frontend + Backend separated)
-
----
-
-## 🏗 System Architecture
-
-```
-Frontend (Vercel)
-        ↓
-FastAPI Backend (Render/Railway)
-        ↓
-Image Processing (OpenCV + PyTorch)
-        ↓
-Supabase Storage + PostgreSQL
-        ↓
-Sorted Results Returned to User
-```
-
----
-
-## 🛠 Tech Stack
-
-### Backend
-- Python
-- FastAPI
-- OpenCV
-- PyTorch
-- Pillow
-- NumPy
-
-### Frontend
-- HTML/CSS / React / Next.js
-
-### Database & Storage
-- Supabase (PostgreSQL + Storage Buckets)
-
-### Deployment
-- Vercel (Frontend)
-- Render or Railway (Backend)
-
----
-
-## 📂 Project Structure
-
-```
+```text
 vision-sort-ai/
-│
 ├── backend/
 │   ├── main.py
+│   ├── requirements.txt
+│   ├── supabase_client.py
 │   ├── utils/
 │   │   ├── blur_detection.py
 │   │   ├── brightness_check.py
 │   │   ├── duplicate_check.py
 │   │   └── model_predict.py
-│   ├── model/
-│   │   └── photo_model.pth
-│   └── requirements.txt
-│
+│   └── model/
+│       └── photo_model.pth
 ├── frontend/
-│   ├── index.html / React files
-│   └── styles.css
-│
+│   ├── index.html
+│   ├── style.css
+│   └── script.js
 └── README.md
 ```
 
----
-
-## 🔧 Installation (Backend Setup)
-
-### 1️⃣ Clone Repository
+## Backend Setup
 
 ```bash
-git clone https://github.com/your-username/vision-sort-ai.git
-cd vision-sort-ai/backend
-```
-
-### 2️⃣ Create Virtual Environment
-
-```bash
-python -m venv venv
-source venv/bin/activate   # Mac/Linux
-venv\Scripts\activate      # Windows
-```
-
-### 3️⃣ Install Dependencies
-
-```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Or manually:
+Create `.env` in `backend/`:
+
+```env
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_KEY=your_supabase_service_or_anon_key
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+DEFAULT_USER_ID=anonymous
+BLUR_THRESHOLD=100
+DUPLICATE_HASH_DISTANCE=5
+MAX_IMAGE_WIDTH=1024
+MAX_FILE_SIZE_MB=10
+ENABLE_AI_LABEL=true
+```
+
+Run backend locally:
 
 ```bash
-pip install fastapi uvicorn opencv-python pillow numpy torch supabase imagehash
+uvicorn main:app --host 0.0.0.0 --port 10000 --reload
 ```
 
----
-
-## ▶️ Run Backend Server
+Production start command:
 
 ```bash
-uvicorn main:app --reload
+uvicorn main:app --host 0.0.0.0 --port 10000
 ```
 
-Server will run at:
+## Frontend Setup
 
-```
-http://127.0.0.1:8000
-```
+You can deploy `frontend/` as static files (Vercel/Netlify/etc.).
 
----
+To use a non-local backend, set before loading `script.js`:
 
-## 🌐 Frontend Setup
-
-If using React / Next.js:
-
-```bash
-npm install
-npm run dev
+```html
+<script>
+  window.VISIONSORT_API_BASE_URL = "https://your-backend-domain";
+</script>
 ```
 
-If using static HTML:
+Then open `frontend/index.html` or deploy the folder.
 
-Simply open `index.html` or deploy to Vercel.
+## API Contract
 
----
+### `GET /`
+Health check.
 
-## 🧠 How Blur Detection Works
+### `POST /upload`
+Multipart form-data with repeated field name `files`.
 
-Blur detection is implemented using the Variance of Laplacian method:
+Response shape:
 
-```python
-variance = cv2.Laplacian(gray_image, cv2.CV_64F).var()
+```json
+{
+  "good": [],
+  "blurry": [],
+  "dark": [],
+  "overexposed": [],
+  "duplicates": []
+}
 ```
 
-- Low variance → Blurry image  
-- High variance → Sharp image  
+Each item includes:
 
----
+- `file_name`
+- `blur_score`
+- `brightness_level`
+- `ai_label`
+- `final_status`
+- `preview_data_url`
+- `storage_path`
 
-## 🤖 AI Model (Optional)
+## Supabase Requirements
 
-A pretrained CNN (e.g., ResNet / MobileNet) can be fine-tuned for image quality classification.
+1. Create table `images` with columns:
+   - `id` (uuid)
+   - `user_id` (text/uuid)
+   - `file_name` (text)
+   - `blur_score` (float)
+   - `brightness_level` (text)
+   - `ai_label` (text)
+   - `final_status` (text)
+   - `created_at` (timestamp)
+2. Create storage buckets:
+   - `uploads`
+   - `processed`
 
-Steps:
-1. Prepare labeled dataset
-2. Train model
-3. Save `.pth` file
-4. Load model during inference
-5. Predict quality class
+## Notes
 
----
-
-## 📊 Use Cases
-
-- Photography workflow automation
-- Bulk image cleaning
-- Dataset preprocessing for ML models
-- Event photo selection
-- Research in image quality assessment
-
----
-
-## 🚀 Deployment
-
-### Backend
-- Deploy using Render / Railway
-- Add environment variables:
-  - SUPABASE_URL
-  - SUPABASE_KEY
-
-### Frontend
-- Deploy on Vercel
-- Set backend API URL
-
----
-
-## 🔮 Future Improvements
-
-- Aesthetic score prediction
-- Face-aware ranking system
-- Similar image clustering
-- GPU acceleration
-- SaaS version with authentication
-
----
-
-## 📄 License
-
-MIT License
-
----
-
-## 👨‍💻 Author
-
-Aggimalla Abhishek  
-DSAI | Computer Vision | AI Systems
+- Duplicate detection uses perceptual hashing (`imagehash.phash`) with configurable Hamming threshold.
+- AI model loading is optional. If `photo_model.pth` is missing or untrained, prediction returns `model_unavailable`.
+- Invalid types, empty files, and oversized images are skipped safely.

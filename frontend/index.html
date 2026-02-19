@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VisionSort AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <p class="eyebrow">Image Quality Pipeline</p>
+        <h1>VisionSort AI</h1>
+        <p class="subtitle">
+          Upload a batch of photos and automatically classify them as good, blurry, dark,
+          overexposed, or duplicate.
+        </p>
+      </section>
+
+      <section class="upload-panel">
+        <label for="imageInput" class="file-label">Select images</label>
+        <input id="imageInput" type="file" accept="image/*" multiple />
+        <button id="uploadButton" type="button">Process Images</button>
+        <div id="loading" class="loading hidden">Processing images...</div>
+      </section>
+
+      <section class="results-grid" id="resultsGrid">
+        <article class="category" data-key="good">
+          <h2>Good Images</h2>
+          <div class="items" id="good"></div>
+        </article>
+
+        <article class="category" data-key="blurry">
+          <h2>Blurry</h2>
+          <div class="items" id="blurry"></div>
+        </article>
+
+        <article class="category" data-key="dark">
+          <h2>Dark</h2>
+          <div class="items" id="dark"></div>
+        </article>
+
+        <article class="category" data-key="overexposed">
+          <h2>Overexposed</h2>
+          <div class="items" id="overexposed"></div>
+        </article>
+
+        <article class="category" data-key="duplicates">
+          <h2>Duplicates</h2>
+          <div class="items" id="duplicates"></div>
+        </article>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
+  </body>
+</html>
