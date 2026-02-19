@@ -3,12 +3,20 @@ const API_BASE_URL = window.VISIONSORT_API_BASE_URL || "http://localhost:10000";
 const uploadButton = document.getElementById("uploadButton");
 const inputEl = document.getElementById("imageInput");
 const loadingEl = document.getElementById("loading");
+const resultsGrid = document.getElementById("resultsGrid");
 
 const categories = ["good", "blurry", "dark", "overexposed", "duplicates"];
 
 function setLoading(isLoading) {
   loadingEl.classList.toggle("hidden", !isLoading);
   uploadButton.disabled = isLoading;
+}
+
+function clearError() {
+  const existing = document.querySelector(".error");
+  if (existing) {
+    existing.remove();
+  }
 }
 
 function clearResults() {
@@ -35,12 +43,23 @@ function renderItem(container, item) {
 
   const meta = document.createElement("div");
   meta.className = "image-meta";
-  meta.innerHTML = `
-    <strong>${item.file_name}</strong>
-    <span>Blur: ${item.blur_score}</span>
-    <span>Brightness: ${item.brightness_level}</span>
-    <span>AI Label: ${item.ai_label}</span>
-  `;
+
+  const lines = [
+    `<strong>${item.file_name}</strong>`,
+    `<span>Blur: ${item.blur_score}</span>`,
+    `<span>Brightness: ${item.brightness_level}</span>`,
+    `<span>AI Label: ${item.ai_label}</span>`,
+  ];
+
+  if (item.storage_path) {
+    lines.push(`<span>Original: ${item.storage_path}</span>`);
+  }
+
+  if (item.processed_storage_path) {
+    lines.push(`<span>Processed: ${item.processed_storage_path}</span>`);
+  }
+
+  meta.innerHTML = lines.join("\n");
 
   card.appendChild(image);
   card.appendChild(meta);
@@ -48,7 +67,8 @@ function renderItem(container, item) {
 }
 
 function renderError(message) {
-  const resultsGrid = document.getElementById("resultsGrid");
+  clearError();
+
   const err = document.createElement("p");
   err.className = "error";
   err.textContent = message;
@@ -79,6 +99,7 @@ async function uploadImages() {
   const formData = new FormData();
   Array.from(files).forEach((file) => formData.append("files", file));
 
+  clearError();
   clearResults();
   setLoading(true);
 
@@ -89,8 +110,19 @@ async function uploadImages() {
     });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Upload failed (${response.status}): ${text}`);
+      let detail = `Upload failed (${response.status})`;
+      try {
+        const payload = await response.json();
+        if (payload && payload.detail) {
+          detail = `Upload failed (${response.status}): ${payload.detail}`;
+        }
+      } catch {
+        const text = await response.text();
+        if (text) {
+          detail = `Upload failed (${response.status}): ${text}`;
+        }
+      }
+      throw new Error(detail);
     }
 
     const data = await response.json();

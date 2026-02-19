@@ -1,14 +1,18 @@
-"""AWS helpers for S3 uploads and RDS PostgreSQL metadata storage."""
+"""AWS helpers for S3 uploads and PostgreSQL metadata storage."""
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Literal, Optional
 
 import boto3
 import psycopg2
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+
+logger = logging.getLogger(__name__)
 
 
 class AWSService:
@@ -17,19 +21,27 @@ class AWSService:
     def __init__(self) -> None:
         self.region = os.getenv("AWS_REGION", "").strip() or None
         self.uploads_bucket = os.getenv("S3_UPLOADS_BUCKET", "").strip()
+        self.processed_bucket = os.getenv("S3_PROCESSED_BUCKET", "").strip()
         self.database_url = os.getenv("DATABASE_URL", "").strip()
 
         access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip() or None
         secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip() or None
 
-        self.s3_client = boto3.client(
-            "s3",
-            region_name=self.region,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-        )
+        self.s3_client: Optional[Any] = None
+        if self.uploads_bucket or self.processed_bucket:
+            self.s3_client = boto3.client(
+                "s3",
+                region_name=self.region,
+                aws_access_key_id=access_key,
+                aws_secret_access_key=secret_key,
+                config=Config(
+                    retries={"max_attempts": 3, "mode": "standard"},
+                    connect_timeout=5,
+                    read_timeout=30,
+                ),
+            )
 
-        self.s3_enabled = bool(self.uploads_bucket)
+        self.s3_enabled = bool(self.s3_client)
         self.db_enabled = bool(self.database_url)
         self.enabled = self.s3_enabled or self.db_enabled
 
@@ -39,31 +51,46 @@ class AWSService:
         if not self.db_enabled:
             raise RuntimeError("DATABASE_URL is not configured.")
 
-        conn = psycopg2.connect(self.database_url, sslmode="require")
+        conn = psycopg2.connect(self.database_url, sslmode="require", connect_timeout=10)
         try:
             yield conn
         finally:
             conn.close()
 
-    def upload_image(self, path: str, data: bytes, content_type: str) -> Optional[str]:
-        """Upload bytes to S3 uploads bucket and return storage path."""
-        if not self.s3_enabled:
+    def _resolve_bucket(self, bucket: Literal["uploads", "processed"]) -> str:
+        if bucket == "processed":
+            return self.processed_bucket
+        return self.uploads_bucket
+
+    def upload_image(
+        self,
+        path: str,
+        data: bytes,
+        content_type: str,
+        bucket: Literal["uploads", "processed"] = "uploads",
+    ) -> Optional[str]:
+        """Upload bytes to S3 and return `s3://` path."""
+        if not self.s3_enabled or not self.s3_client:
+            return None
+
+        bucket_name = self._resolve_bucket(bucket)
+        if not bucket_name:
             return None
 
         try:
             self.s3_client.put_object(
-                Bucket=self.uploads_bucket,
+                Bucket=bucket_name,
                 Key=path,
                 Body=data,
                 ContentType=content_type,
             )
-        except (BotoCoreError, ClientError):
-            raise
+        except (BotoCoreError, ClientError) as exc:
+            raise RuntimeError(f"S3 upload failed for bucket={bucket_name}, key={path}") from exc
 
-        return f"s3://{self.uploads_bucket}/{path}"
+        return f"s3://{bucket_name}/{path}"
 
     def insert_image_metadata(self, row: Dict[str, Any]) -> None:
-        """Insert metadata row into the images table."""
+        """Insert metadata row into the `images` table."""
         if not self.db_enabled:
             return
 
@@ -93,6 +120,20 @@ class AWSService:
         )
 
         with self.db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, values)
-            conn.commit()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(query, values)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+    def health_snapshot(self) -> Dict[str, Any]:
+        """Return non-sensitive service readiness flags."""
+        return {
+            "s3_enabled": self.s3_enabled,
+            "db_enabled": self.db_enabled,
+            "uploads_bucket": self.uploads_bucket or None,
+            "processed_bucket": self.processed_bucket or None,
+            "region": self.region,
+        }
