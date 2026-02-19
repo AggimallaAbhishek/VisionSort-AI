@@ -3,7 +3,10 @@ const metaApiBase = document
   ?.getAttribute("content")
   ?.trim();
 
-const API_BASE_URL = window.VISIONSORT_API_BASE_URL || metaApiBase || "http://localhost:10000";
+const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai-backend.onrender.com";
+const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const fallbackApiBase = isLocalHost ? "http://localhost:10000" : DEFAULT_DEPLOYED_API_BASE_URL;
+const API_BASE_URL = window.VISIONSORT_API_BASE_URL || metaApiBase || fallbackApiBase;
 
 const uploadButton = document.getElementById("uploadButton");
 const inputEl = document.getElementById("imageInput");
