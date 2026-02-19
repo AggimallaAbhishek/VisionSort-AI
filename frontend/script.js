@@ -3,13 +3,54 @@ const metaApiBase = document
   ?.getAttribute("content")
   ?.trim();
 
+const configuredApiBase = (window.VISIONSORT_API_BASE_URL || metaApiBase || "").trim();
 const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai-backend.onrender.com";
 const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-const isRelativeMeta = !!metaApiBase && metaApiBase.startsWith("/");
 
-const fallbackApiBase = isLocalHost ? "http://localhost:10000" : DEFAULT_DEPLOYED_API_BASE_URL;
-const apiBaseFromMeta = isLocalHost && isRelativeMeta ? "" : metaApiBase;
-const API_BASE_URL = window.VISIONSORT_API_BASE_URL || apiBaseFromMeta || fallbackApiBase;
+function normalizeApiBase(base) {
+  return base.replace(/\/+$/, "");
+}
+
+function buildApiCandidates() {
+  const candidates = [];
+
+  if (configuredApiBase) {
+    if (isLocalHost && configuredApiBase.startsWith("/")) {
+      candidates.push("http://localhost:10000");
+    } else {
+      candidates.push(configuredApiBase);
+    }
+  }
+
+  if (!isLocalHost) {
+    candidates.push("/api");
+  } else {
+    candidates.push("http://localhost:10000");
+  }
+
+  candidates.push(DEFAULT_DEPLOYED_API_BASE_URL);
+
+  const unique = [];
+  const seen = new Set();
+
+  for (const base of candidates) {
+    if (!base) {
+      continue;
+    }
+
+    const normalized = normalizeApiBase(base);
+    if (seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    unique.push(normalized);
+  }
+
+  return unique;
+}
+
+const API_BASE_CANDIDATES = buildApiCandidates();
 
 const uploadButton = document.getElementById("uploadButton");
 const inputEl = document.getElementById("imageInput");
@@ -100,6 +141,12 @@ function renderResults(data) {
   });
 }
 
+function buildFormData(files) {
+  const formData = new FormData();
+  Array.from(files).forEach((file) => formData.append("files", file));
+  return formData;
+}
+
 async function getResponseErrorMessage(response) {
   const raw = await response.text();
   if (!raw) {
@@ -119,6 +166,40 @@ async function getResponseErrorMessage(response) {
   return `Upload failed (${response.status}): ${snippet}`;
 }
 
+async function attemptUpload(apiBase, files) {
+  const endpoint = `${apiBase}/upload`;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      body: buildFormData(files),
+    });
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        endpoint,
+        error: await getResponseErrorMessage(response),
+      };
+    }
+
+    return {
+      ok: true,
+      endpoint,
+      data: await response.json(),
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unexpected network error.";
+    return {
+      ok: false,
+      status: 0,
+      endpoint,
+      error: errorMessage,
+    };
+  }
+}
+
 async function uploadImages() {
   const files = inputEl.files;
   if (!files || files.length === 0) {
@@ -126,28 +207,32 @@ async function uploadImages() {
     return;
   }
 
-  const formData = new FormData();
-  Array.from(files).forEach((file) => formData.append("files", file));
-
   clearError();
   clearResults();
   setLoading(true);
 
   try {
-    const response = await fetch(`${API_BASE_URL}/upload`, {
-      method: "POST",
-      body: formData,
-    });
+    const failures = [];
 
-    if (!response.ok) {
-      throw new Error(await getResponseErrorMessage(response));
+    for (const apiBase of API_BASE_CANDIDATES) {
+      const result = await attemptUpload(apiBase, files);
+      if (result.ok) {
+        renderResults(result.data);
+        return;
+      }
+
+      failures.push(`${result.endpoint} -> ${result.error}`);
+
+      if (result.status >= 400 && result.status < 500 && result.status !== 404) {
+        break;
+      }
     }
 
-    const data = await response.json();
-    renderResults(data);
+    const summary = failures.length ? failures[failures.length - 1] : "No upload endpoint available.";
+    throw new Error(`${summary} (Tried: ${API_BASE_CANDIDATES.join(", ")})`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected upload error.";
-    renderError(`${message} (API: ${API_BASE_URL})`);
+    renderError(message);
   } finally {
     setLoading(false);
   }
