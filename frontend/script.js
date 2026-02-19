@@ -11,24 +11,27 @@ function normalizeApiBase(base) {
   return base.replace(/\/+$/, "");
 }
 
+function isRelativePath(base) {
+  return base.startsWith("/");
+}
+
 function buildApiCandidates() {
   const candidates = [];
 
   if (configuredApiBase) {
-    if (isLocalHost && configuredApiBase.startsWith("/")) {
+    if (isLocalHost && isRelativePath(configuredApiBase)) {
       candidates.push("http://localhost:10000");
     } else {
       candidates.push(configuredApiBase);
     }
   }
 
-  if (!isLocalHost) {
-    candidates.push("/api");
-  } else {
+  if (isLocalHost) {
     candidates.push("http://localhost:10000");
+  } else {
+    candidates.push(DEFAULT_DEPLOYED_API_BASE_URL);
+    candidates.push("/api");
   }
-
-  candidates.push(DEFAULT_DEPLOYED_API_BASE_URL);
 
   const unique = [];
   const seen = new Set();
