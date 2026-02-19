@@ -4,7 +4,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://visionsort-ai-backend.onrender.com/$1"
+      "destination": "https://visionsort-ai.onrender.com/$1"
     }
   ],
   "headers": [

@@ -13,7 +13,7 @@ const configuredApiBase = (
   apiOverrideFromQuery || window.VISIONSORT_API_BASE_URL || storedApiBase || metaApiBase || ""
 ).trim();
 
-const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai-backend.onrender.com";
+const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai.onrender.com";
 const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 function normalizeApiBase(base) {
