@@ -7,5 +7,6 @@ Pillow
 ImageHash
 torch
 torchvision
-supabase
+boto3
+psycopg2-binary
 python-dotenv

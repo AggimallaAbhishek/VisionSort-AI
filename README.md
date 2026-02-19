@@ -8,7 +8,7 @@ VisionSort AI is a full-stack image quality pipeline that accepts batch uploads 
 - `overexposed`
 - `duplicates`
 
-It uses FastAPI + OpenCV + optional PyTorch inference, stores assets/metadata in Supabase, and returns structured JSON for a static frontend.
+It uses FastAPI + OpenCV + optional PyTorch inference, stores original images in AWS S3, persists metadata in AWS RDS PostgreSQL, and returns structured JSON for a static frontend.
 
 ## Project Structure
 
@@ -16,8 +16,8 @@ It uses FastAPI + OpenCV + optional PyTorch inference, stores assets/metadata in
 vision-sort-ai/
 ├── backend/
 │   ├── main.py
+│   ├── aws_client.py
 │   ├── requirements.txt
-│   ├── supabase_client.py
 │   ├── utils/
 │   │   ├── blur_detection.py
 │   │   ├── brightness_check.py
@@ -44,8 +44,13 @@ pip install -r requirements.txt
 Create `.env` in `backend/`:
 
 ```env
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_KEY=your_supabase_service_or_anon_key
+AWS_REGION=eu-north-1
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+S3_UPLOADS_BUCKET=visionsort-uploads-vin
+S3_PROCESSED_BUCKET=visionsort-processed-vin
+DATABASE_URL=postgresql://visionsortadmin:password@visionsortdb.cp0oq44ympcn.eu-north-1.rds.amazonaws.com:5432/visionsortdb
+
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
 DEFAULT_USER_ID=anonymous
 BLUR_THRESHOLD=100
@@ -65,6 +70,32 @@ Production start command:
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 10000
+```
+
+## AWS Requirements
+
+1. S3 buckets:
+   - `visionsort-uploads-vin`
+   - `visionsort-processed-vin`
+2. RDS PostgreSQL database:
+   - DB name: `visionsortdb`
+   - Table: `images`
+
+SQL:
+
+```sql
+create extension if not exists pgcrypto;
+
+create table if not exists images (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null default 'anonymous',
+  file_name text not null,
+  blur_score double precision,
+  brightness_level text,
+  ai_label text,
+  final_status text check (final_status in ('good','blurry','dark','overexposed','duplicates')),
+  created_at timestamptz not null default now()
+);
 ```
 
 ## Frontend Setup
@@ -110,21 +141,6 @@ Each item includes:
 - `final_status`
 - `preview_data_url`
 - `storage_path`
-
-## Supabase Requirements
-
-1. Create table `images` with columns:
-   - `id` (uuid)
-   - `user_id` (text/uuid)
-   - `file_name` (text)
-   - `blur_score` (float)
-   - `brightness_level` (text)
-   - `ai_label` (text)
-   - `final_status` (text)
-   - `created_at` (timestamp)
-2. Create storage buckets:
-   - `uploads`
-   - `processed`
 
 ## Notes
 

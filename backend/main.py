@@ -17,7 +17,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from supabase_client import SupabaseService
+from aws_client import AWSService
 from utils.blur_detection import detect_blur
 from utils.brightness_check import analyze_brightness
 from utils.duplicate_check import is_duplicate
@@ -53,7 +53,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-supabase_service = SupabaseService()
+aws_service = AWSService()
 
 
 @app.get("/")
@@ -135,7 +135,7 @@ def persist_metadata(
     ai_label: str,
     final_status: str,
 ) -> None:
-    """Persist image metadata in Supabase `images` table."""
+    """Persist image metadata in PostgreSQL images table."""
     row = {
         "id": str(uuid.uuid4()),
         "user_id": DEFAULT_USER_ID,
@@ -144,9 +144,9 @@ def persist_metadata(
         "brightness_level": brightness_level,
         "ai_label": ai_label,
         "final_status": final_status,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(timezone.utc),
     }
-    supabase_service.insert_image_metadata(row)
+    aws_service.insert_image_metadata(row)
 
 
 @app.post("/upload")
@@ -195,22 +195,21 @@ async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, List[D
             final_status = choose_final_status(blur_score, brightness_level, duplicate)
 
             storage_path = None
-            if supabase_service.enabled:
-                object_path = f"{uuid.uuid4().hex}_{file_name}"
-                try:
-                    storage_path = supabase_service.upload_image(
-                        bucket="uploads",
-                        path=object_path,
-                        data=raw_bytes,
-                        content_type=content_type,
-                    )
-                except Exception as exc:
-                    logger.exception("Supabase upload failed for %s: %s", file_name, exc)
+            object_path = f"{uuid.uuid4().hex}_{file_name}"
 
-                try:
-                    persist_metadata(file_name, blur_score, brightness_level, ai_label, final_status)
-                except Exception as exc:
-                    logger.exception("Supabase metadata insert failed for %s: %s", file_name, exc)
+            try:
+                storage_path = aws_service.upload_image(
+                    path=object_path,
+                    data=raw_bytes,
+                    content_type=content_type,
+                )
+            except Exception as exc:
+                logger.exception("S3 upload failed for %s: %s", file_name, exc)
+
+            try:
+                persist_metadata(file_name, blur_score, brightness_level, ai_label, final_status)
+            except Exception as exc:
+                logger.exception("RDS metadata insert failed for %s: %s", file_name, exc)
 
             preview_data_url = f"data:{content_type};base64,{base64.b64encode(raw_bytes).decode('utf-8')}"
 
