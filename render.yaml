@@ -25,6 +25,8 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         sync: false
+      - key: ALLOWED_ORIGIN_REGEX
+        value: ^https://.*\\.vercel\\.app$
       - key: DEFAULT_USER_ID
         value: anonymous
       - key: BLUR_THRESHOLD

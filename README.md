@@ -155,6 +155,7 @@ The frontend reads backend URL in this order:
 - `S3_PROCESSED_BUCKET`
 - `DATABASE_URL`
 - `ALLOWED_ORIGINS` (include your Vercel domain)
+- `ALLOWED_ORIGIN_REGEX` (recommended: `^https://.*\\.vercel\\.app$`)
 
 ### Vercel frontend
 

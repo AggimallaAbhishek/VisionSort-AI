@@ -48,14 +48,19 @@ EXTENSION_TO_CONTENT_TYPE = {
 
 app = FastAPI(title="VisionSort AI", version="1.1.0")
 
-origins_env = os.getenv("ALLOWED_ORIGINS", "*")
+origins_env = os.getenv("ALLOWED_ORIGINS", "*").strip()
 allow_origins = [origin.strip() for origin in origins_env.split(",") if origin.strip()]
 if not allow_origins:
     allow_origins = ["*"]
 
+# Allow Vercel preview/production domains by default in non-wildcard mode.
+origin_regex_env = os.getenv("ALLOWED_ORIGIN_REGEX", r"^https://.*\.vercel\.app$").strip()
+allow_origin_regex = None if allow_origins == ["*"] else (origin_regex_env or None)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,6 +75,10 @@ def root() -> Dict[str, Any]:
     return {
         "message": "VisionSort AI backend is running.",
         "service": aws_service.health_snapshot(),
+        "cors": {
+            "allow_origins": allow_origins,
+            "allow_origin_regex": allow_origin_regex,
+        },
     }
 
 
