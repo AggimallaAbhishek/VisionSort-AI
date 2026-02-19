@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: visionsort-ai-backend
+    env: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_UPLOADS_BUCKET
+        sync: false
+      - key: S3_PROCESSED_BUCKET
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: DEFAULT_USER_ID
+        value: anonymous
+      - key: BLUR_THRESHOLD
+        value: "100"
+      - key: DUPLICATE_HASH_DISTANCE
+        value: "5"
+      - key: MAX_IMAGE_WIDTH
+        value: "1024"
+      - key: MAX_FILE_SIZE_MB
+        value: "10"
+      - key: MAX_FILES
+        value: "50"
+      - key: ENABLE_AI_LABEL
+        value: "true"

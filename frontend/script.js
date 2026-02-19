@@ -1,4 +1,9 @@
-const API_BASE_URL = window.VISIONSORT_API_BASE_URL || "http://localhost:10000";
+const metaApiBase = document
+  .querySelector('meta[name="visionsort-api-base-url"]')
+  ?.getAttribute("content")
+  ?.trim();
+
+const API_BASE_URL = window.VISIONSORT_API_BASE_URL || metaApiBase || "http://localhost:10000";
 
 const uploadButton = document.getElementById("uploadButton");
 const inputEl = document.getElementById("imageInput");
@@ -128,7 +133,8 @@ async function uploadImages() {
     const data = await response.json();
     renderResults(data);
   } catch (error) {
-    renderError(error.message || "Unexpected upload error.");
+    const message = error instanceof Error ? error.message : "Unexpected upload error.";
+    renderError(message);
   } finally {
     setLoading(false);
   }

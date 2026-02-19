@@ -20,10 +20,12 @@ Frontend (Vercel/static)
 
 ```text
 vision-sort-ai/
+├── render.yaml
 ├── backend/
 │   ├── main.py
 │   ├── aws_client.py
 │   ├── requirements.txt
+│   ├── runtime.txt
 │   ├── .env.example
 │   ├── utils/
 │   │   ├── blur_detection.py
@@ -34,8 +36,9 @@ vision-sort-ai/
 │       └── photo_model.pth
 ├── frontend/
 │   ├── index.html
+│   ├── script.js
 │   ├── style.css
-│   └── script.js
+│   └── vercel.json
 └── README.md
 ```
 
@@ -48,8 +51,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
-
-Update `.env` values for your AWS account and database.
 
 Run locally:
 
@@ -67,7 +68,7 @@ uvicorn main:app --host 0.0.0.0 --port 10000
 
 1. S3 buckets
 - `S3_UPLOADS_BUCKET` for original uploads
-- `S3_PROCESSED_BUCKET` for resized processed images (optional but recommended)
+- `S3_PROCESSED_BUCKET` for resized processed images
 
 2. RDS PostgreSQL table `images`
 
@@ -122,24 +123,49 @@ Each item includes:
 - `ai_label`
 - `final_status`
 - `preview_data_url`
-- `storage_path` (original object, if upload enabled)
-- `processed_storage_path` (resized object, if processed bucket configured)
+- `storage_path` (original object)
+- `processed_storage_path` (resized object)
 
 ## Frontend Setup
 
-Deploy `frontend/` as static files on Vercel (or any static host).
+Serve locally:
 
-To use a deployed backend URL, set this before loading `script.js` in `index.html`:
-
-```html
-<script>
-  window.VISIONSORT_API_BASE_URL = "https://your-backend-domain";
-</script>
+```bash
+cd frontend
+python3 -m http.server 5500
 ```
+
+The frontend reads backend URL in this order:
+
+1. `window.VISIONSORT_API_BASE_URL`
+2. `<meta name="visionsort-api-base-url" ...>` in `frontend/index.html`
+3. fallback `http://localhost:10000`
+
+## Deploy
+
+### Render backend
+
+1. Create a new Blueprint on Render from this repo.
+2. Render reads `render.yaml` and creates `visionsort-ai-backend`.
+3. Set secret env vars in Render dashboard:
+- `AWS_REGION`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `S3_UPLOADS_BUCKET`
+- `S3_PROCESSED_BUCKET`
+- `DATABASE_URL`
+- `ALLOWED_ORIGINS` (include your Vercel domain)
+
+### Vercel frontend
+
+1. Import the same repo in Vercel.
+2. Set **Root Directory** to `frontend`.
+3. Deploy.
+4. Update `frontend/index.html` meta tag `visionsort-api-base-url` to your Render backend URL.
 
 ## Deployment Notes
 
-- Ensure `ALLOWED_ORIGINS` includes your frontend domain(s).
-- Backend validates file count, file size, supported image types, and invalid images.
-- Images are resized to `MAX_IMAGE_WIDTH` before analysis.
-- If the model file is missing/untrained, `ai_label` returns `model_unavailable`.
+- Ensure `ALLOWED_ORIGINS` includes local and deployed frontend domains.
+- Backend validates max file count, file size, and allowed image types.
+- Images are resized using `MAX_IMAGE_WIDTH` before analysis.
+- If model weights are missing/untrained, `ai_label` is `model_unavailable`.
