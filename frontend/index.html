@@ -8,57 +8,127 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Manrope:wght@500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main class="app-shell">
-      <section class="hero">
-        <p class="eyebrow">Image Quality Pipeline</p>
-        <h1>VisionSort AI</h1>
-        <p class="subtitle">
-          Upload a batch of photos and automatically classify them as good, blurry, dark,
-          overexposed, or duplicate.
-        </p>
-      </section>
+    <div class="bg-glow bg-glow-a"></div>
+    <div class="bg-glow bg-glow-b"></div>
 
-      <section class="upload-panel">
-        <label for="imageInput" class="file-label">Select images</label>
-        <input id="imageInput" type="file" accept="image/*" multiple />
-        <button id="uploadButton" type="button">Process Images</button>
-        <div id="loading" class="loading hidden">Processing images...</div>
-      </section>
+    <div class="page-shell">
+      <header class="topbar reveal">
+        <div class="brand">
+          <span class="brand-logo" aria-hidden="true">
+            <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+              <path d="M4 7.5L12 3l8 4.5v9L12 21l-8-4.5z"></path>
+              <path d="M8 11.3l4 2.3 4-2.3" class="logo-cut"></path>
+            </svg>
+          </span>
+          <div>
+            <p class="brand-title">VisionSort <span>AI</span></p>
+          </div>
+        </div>
 
-      <section class="results-grid" id="resultsGrid">
-        <article class="category" data-key="good">
-          <h2>Good Images</h2>
-          <div class="items" id="good"></div>
-        </article>
+        <nav class="top-nav" aria-label="Primary">
+          <a href="#" class="active">Upload</a>
+          <a href="#">Dashboard</a>
+          <a href="#">History</a>
+          <a href="#">Settings</a>
+        </nav>
 
-        <article class="category" data-key="blurry">
-          <h2>Blurry</h2>
-          <div class="items" id="blurry"></div>
-        </article>
+        <button class="ghost-btn" type="button">Run Analysis</button>
+      </header>
 
-        <article class="category" data-key="dark">
-          <h2>Dark</h2>
-          <div class="items" id="dark"></div>
-        </article>
+      <main class="workspace">
+        <section class="hero reveal">
+          <p class="eyebrow">Image Quality Pipeline</p>
+          <h1>Image Categorization Upload</h1>
+          <p>
+            Drag and drop product shots or raw images. VisionSort AI analyzes blur, brightness,
+            and duplicates, then returns structured quality categories in seconds.
+          </p>
+        </section>
 
-        <article class="category" data-key="overexposed">
-          <h2>Overexposed</h2>
-          <div class="items" id="overexposed"></div>
-        </article>
+        <section class="stats reveal-stagger">
+          <article class="metric-card good">
+            <p>Total Selected</p>
+            <h2 id="metricSelected">0</h2>
+            <span>Files in queue</span>
+          </article>
+          <article class="metric-card pass">
+            <p>Good Images</p>
+            <h2 id="metricGood">0</h2>
+            <span>Quality approved</span>
+          </article>
+          <article class="metric-card warn">
+            <p>Issues Found</p>
+            <h2 id="metricIssues">0</h2>
+            <span>Blurry / dark / overexposed / duplicate</span>
+          </article>
+          <article class="metric-card score">
+            <p>Quality Score</p>
+            <h2 id="metricScore">0%</h2>
+            <span>Good ÷ analyzed</span>
+          </article>
+        </section>
 
-        <article class="category" data-key="duplicates">
-          <h2>Duplicates</h2>
-          <div class="items" id="duplicates"></div>
-        </article>
-      </section>
-    </main>
+        <section class="upload-wrap reveal-stagger">
+          <div id="dropZone" class="drop-zone" role="button" tabindex="0" aria-label="Upload images">
+            <input id="imageInput" type="file" accept="image/*" multiple hidden />
+            <div class="drop-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" role="presentation" focusable="false">
+                <path d="M12 15V6"></path>
+                <path d="M8.5 9.5L12 6l3.5 3.5"></path>
+                <path d="M4 15.5v1.8A1.7 1.7 0 0 0 5.7 19h12.6a1.7 1.7 0 0 0 1.7-1.7v-1.8"></path>
+              </svg>
+            </div>
+            <h3>Drag &amp; drop images here</h3>
+            <p>or click to browse from your computer</p>
+            <div class="drop-meta">
+              <span>MAX 10MB</span>
+              <span>JPG, PNG, WEBP</span>
+            </div>
+          </div>
 
-    <script src="./script.js?v=20260220a"></script>
+          <div class="queue-head">
+            <p>Files in Queue <span id="queueCount">0 Selected</span></p>
+            <button id="clearQueueBtn" class="text-btn" type="button">Clear all</button>
+          </div>
+
+          <ul id="queueList" class="queue-list" aria-live="polite"></ul>
+
+          <div class="panel-actions">
+            <p id="statusText">Ready for analysis.</p>
+            <div class="action-buttons">
+              <button id="cancelBtn" class="ghost-btn subtle" type="button">Cancel</button>
+              <button id="analyzeBtn" class="primary-btn" type="button">Analyze Images</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="chips reveal-stagger" id="chipRow">
+          <button class="chip active" data-filter="all" type="button">All <span id="chipAll">0</span></button>
+          <button class="chip good" data-filter="good" type="button">Good <span id="chipGood">0</span></button>
+          <button class="chip blurry" data-filter="blurry" type="button">Blurry <span id="chipBlurry">0</span></button>
+          <button class="chip dark" data-filter="dark" type="button">Dark <span id="chipDark">0</span></button>
+          <button class="chip overexposed" data-filter="overexposed" type="button">
+            Overexposed <span id="chipOverexposed">0</span>
+          </button>
+          <button class="chip duplicates" data-filter="duplicates" type="button">
+            Duplicates <span id="chipDuplicates">0</span>
+          </button>
+        </section>
+
+        <p id="errorBanner" class="error-banner hidden" role="alert"></p>
+
+        <section class="result-grid reveal-stagger" id="resultGrid" aria-live="polite">
+          <article class="result-empty">No processed images yet. Upload files to start analysis.</article>
+        </section>
+      </main>
+    </div>
+
+    <script src="./script.js?v=20260220b"></script>
   </body>
 </html>

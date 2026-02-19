@@ -14,7 +14,49 @@ const configuredApiBase = (
 ).trim();
 
 const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai.onrender.com";
-const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const ALLOWED_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+const CATEGORIES = ["good", "blurry", "dark", "overexposed", "duplicates"];
+
+const dropZone = document.getElementById("dropZone");
+const imageInput = document.getElementById("imageInput");
+const analyzeBtn = document.getElementById("analyzeBtn");
+const cancelBtn = document.getElementById("cancelBtn");
+const clearQueueBtn = document.getElementById("clearQueueBtn");
+const queueList = document.getElementById("queueList");
+const queueCount = document.getElementById("queueCount");
+const statusText = document.getElementById("statusText");
+const resultGrid = document.getElementById("resultGrid");
+const errorBanner = document.getElementById("errorBanner");
+const chipRow = document.getElementById("chipRow");
+
+const metricSelected = document.getElementById("metricSelected");
+const metricGood = document.getElementById("metricGood");
+const metricIssues = document.getElementById("metricIssues");
+const metricScore = document.getElementById("metricScore");
+
+const chipAll = document.getElementById("chipAll");
+const chipGood = document.getElementById("chipGood");
+const chipBlurry = document.getElementById("chipBlurry");
+const chipDark = document.getElementById("chipDark");
+const chipOverexposed = document.getElementById("chipOverexposed");
+const chipDuplicates = document.getElementById("chipDuplicates");
+
+let selectedFiles = [];
+let currentFilter = "all";
+let lastResultsByCategory = createEmptyResults();
+let isUploading = false;
+
+function createEmptyResults() {
+  return {
+    good: [],
+    blurry: [],
+    dark: [],
+    overexposed: [],
+    duplicates: [],
+  };
+}
 
 function normalizeApiBase(base) {
   return base.replace(/\/+$/, "");
@@ -26,6 +68,7 @@ function isRelativePath(base) {
 
 function buildApiCandidates() {
   const candidates = [];
+  const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
   if (configuredApiBase) {
     if (isLocalHost && isRelativePath(configuredApiBase)) {
@@ -64,105 +107,264 @@ function buildApiCandidates() {
 
 const API_BASE_CANDIDATES = buildApiCandidates();
 
-const uploadButton = document.getElementById("uploadButton");
-const inputEl = document.getElementById("imageInput");
-const loadingEl = document.getElementById("loading");
-const resultsGrid = document.getElementById("resultsGrid");
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 
-const categories = ["good", "blurry", "dark", "overexposed", "duplicates"];
+function bytesToSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "0 MB";
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
-function setLoading(isLoading) {
-  loadingEl.classList.toggle("hidden", !isLoading);
-  uploadButton.disabled = isLoading;
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function showError(message) {
+  errorBanner.textContent = message;
+  errorBanner.classList.remove("hidden");
 }
 
 function clearError() {
-  const existing = document.querySelector(".error");
-  if (existing) {
-    existing.remove();
+  errorBanner.textContent = "";
+  errorBanner.classList.add("hidden");
+}
+
+function setStatus(text) {
+  statusText.textContent = text;
+}
+
+function setUploadingState(uploading) {
+  isUploading = uploading;
+  analyzeBtn.disabled = uploading || selectedFiles.length === 0;
+  cancelBtn.disabled = uploading;
+  clearQueueBtn.disabled = uploading || selectedFiles.length === 0;
+  imageInput.disabled = uploading;
+  dropZone.setAttribute("aria-busy", uploading ? "true" : "false");
+
+  if (uploading) {
+    setStatus("Analyzing images... This can take a few seconds.");
+    analyzeBtn.textContent = "Analyzing...";
+  } else {
+    analyzeBtn.textContent = "Analyze Images";
   }
 }
 
-function clearResults() {
-  categories.forEach((key) => {
-    const container = document.getElementById(key);
-    container.innerHTML = "";
+function updateQueueMetrics() {
+  const count = selectedFiles.length;
+  queueCount.textContent = `${count} Selected`;
+  metricSelected.textContent = String(count);
+
+  if (!isUploading) {
+    setStatus(count ? "Queue ready. Click Analyze Images." : "Ready for analysis.");
+  }
+
+  analyzeBtn.disabled = isUploading || count === 0;
+  clearQueueBtn.disabled = isUploading || count === 0;
+}
+
+function renderQueue() {
+  queueList.innerHTML = "";
+
+  if (!selectedFiles.length) {
+    const li = document.createElement("li");
+    li.className = "queue-item";
+    li.innerHTML = `
+      <div class="queue-item-main">
+        <strong>No files in queue</strong>
+        <p class="queue-meta">Drag images into the drop zone or click to browse.</p>
+      </div>
+    `;
+    queueList.appendChild(li);
+    return;
+  }
+
+  selectedFiles.forEach((file, index) => {
+    const safeName = escapeHtml(file.name);
+    const li = document.createElement("li");
+    li.className = "queue-item";
+    li.innerHTML = `
+      <div class="queue-item-main">
+        <strong>${safeName}</strong>
+        <p class="queue-meta">${bytesToSize(file.size)} • Ready</p>
+      </div>
+      <button class="queue-delete" type="button" aria-label="Remove ${safeName}" data-index="${index}">
+        ✕
+      </button>
+    `;
+    queueList.appendChild(li);
   });
 }
 
-function renderEmpty(container) {
-  const empty = document.createElement("div");
-  empty.className = "empty";
-  empty.textContent = "No images";
-  container.appendChild(empty);
+function setFilter(filterKey) {
+  currentFilter = filterKey;
+  chipRow.querySelectorAll(".chip").forEach((chip) => {
+    chip.classList.toggle("active", chip.dataset.filter === filterKey);
+  });
+  renderResultCards();
 }
 
-function renderItem(container, item) {
-  const card = document.createElement("div");
-  card.className = "image-card";
+function updateSummaryChips(results) {
+  const counts = {
+    good: results.good.length,
+    blurry: results.blurry.length,
+    dark: results.dark.length,
+    overexposed: results.overexposed.length,
+    duplicates: results.duplicates.length,
+  };
 
-  const image = document.createElement("img");
-  image.src = item.preview_data_url;
-  image.alt = item.file_name;
+  const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
+  const issues = total - counts.good;
+  const score = total ? Math.round((counts.good / total) * 100) : 0;
 
-  const meta = document.createElement("div");
-  meta.className = "image-meta";
+  chipAll.textContent = String(total);
+  chipGood.textContent = String(counts.good);
+  chipBlurry.textContent = String(counts.blurry);
+  chipDark.textContent = String(counts.dark);
+  chipOverexposed.textContent = String(counts.overexposed);
+  chipDuplicates.textContent = String(counts.duplicates);
 
-  const lines = [
-    `<strong>${item.file_name}</strong>`,
-    `<span>Blur: ${item.blur_score}</span>`,
-    `<span>Brightness: ${item.brightness_level}</span>`,
-    `<span>AI Label: ${item.ai_label}</span>`,
-  ];
+  metricGood.textContent = String(counts.good);
+  metricIssues.textContent = String(issues);
+  metricScore.textContent = `${score}%`;
+}
 
-  if (item.storage_path) {
-    lines.push(`<span>Original: ${item.storage_path}</span>`);
+function flattenResults(results) {
+  const items = [];
+  CATEGORIES.forEach((category) => {
+    (results[category] || []).forEach((item) => {
+      items.push({ ...item, __category: category });
+    });
+  });
+  return items;
+}
+
+function mapBrightnessValue(level) {
+  if (level === "dark") {
+    return 18;
+  }
+  if (level === "overexposed") {
+    return 92;
+  }
+  return 55;
+}
+
+function renderResultCards() {
+  const allItems = flattenResults(lastResultsByCategory);
+  const filtered = currentFilter === "all" ? allItems : allItems.filter((item) => item.__category === currentFilter);
+
+  resultGrid.innerHTML = "";
+
+  if (!filtered.length) {
+    const empty = document.createElement("article");
+    empty.className = "result-empty";
+    empty.textContent = "No processed images for this category yet.";
+    resultGrid.appendChild(empty);
+    return;
   }
 
-  if (item.processed_storage_path) {
-    lines.push(`<span>Processed: ${item.processed_storage_path}</span>`);
-  }
+  filtered.forEach((item) => {
+    const blurPercent = clamp((Number(item.blur_score || 0) / 2000) * 100, 2, 100);
+    const brightnessPercent = mapBrightnessValue(item.brightness_level);
+    const safeName = escapeHtml(item.file_name);
+    const safeCategory = escapeHtml(item.__category);
+    const safeLabel = escapeHtml(item.ai_label || "model_unavailable");
+    const safeBrightness = escapeHtml(item.brightness_level || "normal");
+    const safeStorage = escapeHtml(item.storage_path || "n/a");
+    const safeProcessedStorage = escapeHtml(item.processed_storage_path || "n/a");
 
-  meta.innerHTML = lines.join("\n");
+    const card = document.createElement("article");
+    card.className = "result-card";
+    card.innerHTML = `
+      <div class="card-image-wrap">
+        <img src="${item.preview_data_url}" alt="${safeName}" loading="lazy" />
+        <span class="status-badge ${safeCategory}">${safeCategory}</span>
+      </div>
+      <div class="card-body">
+        <h3 class="card-title">${safeName}</h3>
+        <p class="card-subtitle">${safeLabel}</p>
 
-  card.appendChild(image);
-  card.appendChild(meta);
-  container.appendChild(card);
+        <div class="metric-line">
+          <div class="label-row"><span>Blur Score</span><strong>${Number(item.blur_score || 0).toFixed(2)}</strong></div>
+          <div class="progress blur"><span style="width:${blurPercent}%"></span></div>
+        </div>
+
+        <div class="metric-line">
+          <div class="label-row"><span>Brightness</span><strong>${safeBrightness}</strong></div>
+          <div class="progress brightness"><span style="width:${brightnessPercent}%"></span></div>
+        </div>
+
+        <p class="footer-meta">Original: ${safeStorage}<br />Processed: ${safeProcessedStorage}</p>
+      </div>
+    `;
+
+    resultGrid.appendChild(card);
+  });
 }
 
-function renderError(message) {
-  clearError();
+function addFilesToQueue(fileList) {
+  const additions = [];
+  const issues = [];
 
-  const err = document.createElement("p");
-  err.className = "error";
-  err.textContent = message;
-  resultsGrid.prepend(err);
-}
-
-function renderResults(data) {
-  categories.forEach((key) => {
-    const container = document.getElementById(key);
-    const items = Array.isArray(data[key]) ? data[key] : [];
-
-    if (items.length === 0) {
-      renderEmpty(container);
+  Array.from(fileList).forEach((file) => {
+    const duplicate = selectedFiles.some((selected) => selected.name === file.name && selected.size === file.size);
+    if (duplicate) {
       return;
     }
 
-    items.forEach((item) => renderItem(container, item));
+    if (!ALLOWED_TYPES.has((file.type || "").toLowerCase())) {
+      issues.push(`Skipped ${file.name}: unsupported type.`);
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      issues.push(`Skipped ${file.name}: larger than ${MAX_FILE_SIZE_MB}MB.`);
+      return;
+    }
+
+    additions.push(file);
   });
+
+  if (issues.length) {
+    showError(issues.join(" "));
+  } else {
+    clearError();
+  }
+
+  if (additions.length) {
+    selectedFiles = [...selectedFiles, ...additions];
+    renderQueue();
+    updateQueueMetrics();
+  }
+}
+
+function clearQueue() {
+  if (isUploading) {
+    return;
+  }
+  selectedFiles = [];
+  imageInput.value = "";
+  renderQueue();
+  updateQueueMetrics();
 }
 
 function buildFormData(files) {
   const formData = new FormData();
-  Array.from(files).forEach((file) => formData.append("files", file));
+  files.forEach((file) => formData.append("files", file));
   return formData;
 }
 
 async function getResponseErrorMessage(response) {
   const raw = await response.text();
   if (!raw) {
-    return `Upload failed (${response.status})`;
+    return `Upload failed (${response.status}).`;
   }
 
   try {
@@ -174,7 +376,7 @@ async function getResponseErrorMessage(response) {
     // Fall through to raw text output.
   }
 
-  const snippet = raw.length > 240 ? `${raw.slice(0, 240)}...` : raw;
+  const snippet = raw.length > 220 ? `${raw.slice(0, 220)}...` : raw;
   return `Upload failed (${response.status}): ${snippet}`;
 }
 
@@ -202,34 +404,40 @@ async function attemptUpload(apiBase, files) {
       data: await response.json(),
     };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "Unexpected network error.";
     return {
       ok: false,
       status: 0,
       endpoint,
-      error: errorMessage,
+      error: error instanceof Error ? error.message : "Unexpected network error.",
     };
   }
 }
 
 async function uploadImages() {
-  const files = inputEl.files;
-  if (!files || files.length === 0) {
-    alert("Please select one or more images first.");
+  if (!selectedFiles.length || isUploading) {
     return;
   }
 
   clearError();
-  clearResults();
-  setLoading(true);
+  setUploadingState(true);
 
   try {
     const failures = [];
 
     for (const apiBase of API_BASE_CANDIDATES) {
-      const result = await attemptUpload(apiBase, files);
+      const result = await attemptUpload(apiBase, selectedFiles);
       if (result.ok) {
-        renderResults(result.data);
+        lastResultsByCategory = {
+          good: Array.isArray(result.data.good) ? result.data.good : [],
+          blurry: Array.isArray(result.data.blurry) ? result.data.blurry : [],
+          dark: Array.isArray(result.data.dark) ? result.data.dark : [],
+          overexposed: Array.isArray(result.data.overexposed) ? result.data.overexposed : [],
+          duplicates: Array.isArray(result.data.duplicates) ? result.data.duplicates : [],
+        };
+
+        updateSummaryChips(lastResultsByCategory);
+        renderResultCards();
+        setStatus(`Completed via ${result.endpoint}`);
         return;
       }
 
@@ -240,14 +448,84 @@ async function uploadImages() {
       }
     }
 
-    const summary = failures.length ? failures[failures.length - 1] : "No upload endpoint available.";
+    const summary = failures.length
+      ? failures[failures.length - 1]
+      : "No upload endpoint was reachable.";
     throw new Error(`${summary} (Tried: ${API_BASE_CANDIDATES.join(", ")})`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unexpected upload error.";
-    renderError(message);
+    showError(error instanceof Error ? error.message : "Unexpected upload failure.");
+    setStatus("Upload failed. Fix the issue and try again.");
   } finally {
-    setLoading(false);
+    setUploadingState(false);
+    updateQueueMetrics();
   }
 }
 
-uploadButton.addEventListener("click", uploadImages);
+function handleQueueClick(event) {
+  const button = event.target.closest(".queue-delete");
+  if (!button) {
+    return;
+  }
+
+  const index = Number(button.dataset.index);
+  if (!Number.isInteger(index)) {
+    return;
+  }
+
+  selectedFiles.splice(index, 1);
+  renderQueue();
+  updateQueueMetrics();
+}
+
+function handleDropZoneKey(event) {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    imageInput.click();
+  }
+}
+
+dropZone.addEventListener("click", () => imageInput.click());
+dropZone.addEventListener("keydown", handleDropZoneKey);
+
+dropZone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  dropZone.classList.add("is-active");
+});
+
+dropZone.addEventListener("dragleave", () => {
+  dropZone.classList.remove("is-active");
+});
+
+dropZone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  dropZone.classList.remove("is-active");
+  if (event.dataTransfer?.files?.length) {
+    addFilesToQueue(event.dataTransfer.files);
+  }
+});
+
+imageInput.addEventListener("change", () => {
+  if (imageInput.files?.length) {
+    addFilesToQueue(imageInput.files);
+  }
+  imageInput.value = "";
+});
+
+queueList.addEventListener("click", handleQueueClick);
+analyzeBtn.addEventListener("click", uploadImages);
+clearQueueBtn.addEventListener("click", clearQueue);
+cancelBtn.addEventListener("click", clearQueue);
+
+chipRow.addEventListener("click", (event) => {
+  const chip = event.target.closest(".chip[data-filter]");
+  if (!chip) {
+    return;
+  }
+  setFilter(chip.dataset.filter);
+});
+
+renderQueue();
+updateQueueMetrics();
+updateSummaryChips(lastResultsByCategory);
+renderResultCards();
+setFilter("all");
