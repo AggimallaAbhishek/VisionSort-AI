@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "100"))
 DUPLICATE_HASH_DISTANCE = int(os.getenv("DUPLICATE_HASH_DISTANCE", "5"))
 MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "1024"))
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_FILES = int(os.getenv("MAX_FILES", "50"))
 ENABLE_AI_LABEL = os.getenv("ENABLE_AI_LABEL", "true").lower() == "true"
@@ -112,6 +112,11 @@ def root() -> Dict[str, Any]:
         "workers": {
             "persist_workers": PERSIST_WORKERS,
             "upload_job_workers": UPLOAD_JOB_WORKERS,
+        },
+        "limits": {
+            "max_file_size_mb": MAX_FILE_SIZE_MB,
+            "max_files": MAX_FILES,
+            "max_image_width": MAX_IMAGE_WIDTH,
         },
     }
 

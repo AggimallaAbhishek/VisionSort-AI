@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="visionsort-api-base-url" content="/api" />
+    <meta name="visionsort-max-file-size-mb" content="100" />
+    <meta name="visionsort-max-files" content="50" />
     <title>VisionSort AI</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -87,7 +89,7 @@
             <h3>Drag &amp; drop images here</h3>
             <p>or click to browse from your computer</p>
             <div class="drop-meta">
-              <span>MAX 10MB</span>
+              <span id="fileSizeLimitBadge">MAX 100MB</span>
               <span>JPG, PNG, WEBP, GIF, BMP, TIFF</span>
             </div>
           </div>
@@ -141,6 +143,6 @@
       </main>
     </div>
 
-    <script src="./script.js?v=20260220h"></script>
+    <script src="./script.js?v=20260220i"></script>
   </body>
 </html>

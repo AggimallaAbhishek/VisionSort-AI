@@ -13,9 +13,24 @@ const configuredApiBase = (
   apiOverrideFromQuery || window.VISIONSORT_API_BASE_URL || metaApiBase || storedApiBase || ""
 ).trim();
 
+const parseLimit = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const configuredMaxFileSizeMb = parseLimit(
+  document.querySelector('meta[name="visionsort-max-file-size-mb"]')?.getAttribute("content"),
+  100
+);
+const configuredMaxFiles = parseLimit(
+  document.querySelector('meta[name="visionsort-max-files"]')?.getAttribute("content"),
+  50
+);
+
 const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai.onrender.com";
-const MAX_FILE_SIZE_MB = 10;
+const MAX_FILE_SIZE_MB = configuredMaxFileSizeMb;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const MAX_FILES = configuredMaxFiles;
 const ALLOWED_TYPES = new Set([
   "image/jpeg",
   "image/jpg",
@@ -56,6 +71,7 @@ const chipBlurry = document.getElementById("chipBlurry");
 const chipDark = document.getElementById("chipDark");
 const chipOverexposed = document.getElementById("chipOverexposed");
 const chipDuplicates = document.getElementById("chipDuplicates");
+const fileSizeLimitBadge = document.getElementById("fileSizeLimitBadge");
 
 const progressWrap = document.getElementById("progressWrap");
 const progressFill = document.getElementById("progressFill");
@@ -502,6 +518,11 @@ function addFilesToQueue(fileList) {
   const issues = [];
 
   Array.from(fileList).forEach((file) => {
+    if (selectedFiles.length + additions.length >= MAX_FILES) {
+      issues.push(`Skipped ${file.name}: max ${MAX_FILES} files per batch.`);
+      return;
+    }
+
     const duplicate = selectedFiles.some((selected) => selected.name === file.name && selected.size === file.size);
     if (duplicate) {
       return;
@@ -993,3 +1014,7 @@ updateSummaryChips(lastResultsByCategory);
 renderResultCards();
 setFilter("all");
 resetProgress();
+
+if (fileSizeLimitBadge) {
+  fileSizeLimitBadge.textContent = `MAX ${MAX_FILE_SIZE_MB}MB`;
+}
