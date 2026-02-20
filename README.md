@@ -141,6 +141,48 @@ The frontend reads backend URL in this order:
 2. `<meta name="visionsort-api-base-url" ...>` in `frontend/index.html`
 3. fallback `http://localhost:10000`
 
+## Train MobileNetV2 (Optional AI Label)
+
+`model_predict.py` is located at:
+
+- `backend/utils/model_predict.py`
+
+To train and generate `backend/model/photo_model.pth`, use:
+
+```bash
+cd backend
+source .venv/bin/activate
+python train_mobilenetv2.py \
+  --data-root ../training_data \
+  --epochs 8 \
+  --batch-size 16 \
+  --freeze-features
+```
+
+Expected dataset structure:
+
+```text
+training_data/
+├── train/
+│   ├── good/
+│   ├── blurry/
+│   ├── dark/
+│   ├── overexposed/
+│   └── duplicates/
+└── val/
+    ├── good/
+    ├── blurry/
+    ├── dark/
+    ├── overexposed/
+    └── duplicates/
+```
+
+After training:
+
+1. Ensure `backend/model/photo_model.pth` is non-empty.
+2. Set `ENABLE_AI_LABEL=true` in backend env.
+3. Restart backend and test upload.
+
 ## Deploy
 
 ### Render backend
