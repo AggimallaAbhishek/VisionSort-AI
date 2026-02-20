@@ -99,6 +99,17 @@
 
           <ul id="queueList" class="queue-list" aria-live="polite"></ul>
 
+          <div id="progressWrap" class="analysis-progress hidden" aria-live="polite">
+            <div class="analysis-progress-head">
+              <strong id="progressLabel">Analysis progress</strong>
+              <span id="progressPercent">0%</span>
+            </div>
+            <div class="analysis-progress-track">
+              <span id="progressFill"></span>
+            </div>
+            <p id="progressMeta">Waiting to start...</p>
+          </div>
+
           <div class="panel-actions">
             <p id="statusText">Ready for analysis.</p>
             <div class="action-buttons">
@@ -129,6 +140,6 @@
       </main>
     </div>
 
-    <script src="./script.js?v=20260220c"></script>
+    <script src="./script.js?v=20260220d"></script>
   </body>
 </html>

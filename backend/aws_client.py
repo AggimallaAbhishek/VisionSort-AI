@@ -94,6 +94,13 @@ class AWSService:
         if not self.db_enabled:
             return
 
+        self.insert_many_image_metadata([row])
+
+    def insert_many_image_metadata(self, rows: list[Dict[str, Any]]) -> None:
+        """Insert multiple metadata rows in one DB transaction."""
+        if not self.db_enabled or not rows:
+            return
+
         query = """
             INSERT INTO images (
                 id,
@@ -108,21 +115,24 @@ class AWSService:
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """
 
-        values = (
-            row["id"],
-            row["user_id"],
-            row["file_name"],
-            row["blur_score"],
-            row["brightness_level"],
-            row["ai_label"],
-            row["final_status"],
-            row["created_at"],
-        )
+        values = [
+            (
+                row["id"],
+                row["user_id"],
+                row["file_name"],
+                row["blur_score"],
+                row["brightness_level"],
+                row["ai_label"],
+                row["final_status"],
+                row["created_at"],
+            )
+            for row in rows
+        ]
 
         with self.db_connection() as conn:
             try:
                 with conn.cursor() as cur:
-                    cur.execute(query, values)
+                    cur.executemany(query, values)
                 conn.commit()
             except Exception:
                 conn.rollback()

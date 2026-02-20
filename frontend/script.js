@@ -19,6 +19,8 @@ const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CATEGORIES = ["good", "blurry", "dark", "overexposed", "duplicates"];
+const ASYNC_POLL_INTERVAL_MS = 700;
+const ASYNC_TIMEOUT_MS = 8 * 60 * 1000;
 
 const dropZone = document.getElementById("dropZone");
 const imageInput = document.getElementById("imageInput");
@@ -44,10 +46,18 @@ const chipDark = document.getElementById("chipDark");
 const chipOverexposed = document.getElementById("chipOverexposed");
 const chipDuplicates = document.getElementById("chipDuplicates");
 
+const progressWrap = document.getElementById("progressWrap");
+const progressFill = document.getElementById("progressFill");
+const progressPercent = document.getElementById("progressPercent");
+const progressMeta = document.getElementById("progressMeta");
+const progressLabel = document.getElementById("progressLabel");
+
 let selectedFiles = [];
 let currentFilter = "all";
 let lastResultsByCategory = createEmptyResults();
 let isUploading = false;
+let pseudoProgressTimer = null;
+let pseudoProgressValue = 0;
 
 function createEmptyResults() {
   return {
@@ -86,24 +96,7 @@ function buildApiCandidates() {
     candidates.push("/api");
   }
 
-  const unique = [];
-  const seen = new Set();
-
-  for (const base of candidates) {
-    if (!base) {
-      continue;
-    }
-
-    const normalized = normalizeApiBase(base);
-    if (seen.has(normalized)) {
-      continue;
-    }
-
-    seen.add(normalized);
-    unique.push(normalized);
-  }
-
-  return unique;
+  return dedupeUrls(candidates);
 }
 
 const API_BASE_CANDIDATES = buildApiCandidates();
@@ -124,35 +117,35 @@ function dedupeUrls(urls) {
   return unique;
 }
 
-function buildUploadEndpointCandidates(apiBases) {
+function buildEndpointCandidates(apiBases, suffixPath) {
   const endpoints = [];
 
   apiBases.forEach((base) => {
     const normalizedBase = normalizeApiBase(base);
 
     if (normalizedBase === "/api") {
-      endpoints.push("/api/upload");
+      endpoints.push(`/api${suffixPath}`);
       return;
     }
 
     if (normalizedBase.endsWith("/api")) {
-      endpoints.push(`${normalizedBase}/upload`);
+      endpoints.push(`${normalizedBase}${suffixPath}`);
       const baseWithoutApi = normalizedBase.slice(0, -4);
       if (baseWithoutApi) {
-        endpoints.push(`${baseWithoutApi}/upload`);
+        endpoints.push(`${baseWithoutApi}${suffixPath}`);
       }
       return;
     }
 
-    endpoints.push(`${normalizedBase}/upload`);
-    endpoints.push(`${normalizedBase}/api/upload`);
+    endpoints.push(`${normalizedBase}${suffixPath}`);
+    endpoints.push(`${normalizedBase}/api${suffixPath}`);
   });
 
   return dedupeUrls(endpoints);
 }
 
-function prioritizeStoredEndpoint(endpoints) {
-  const storedEndpoint = localStorage.getItem("visionsort_api_upload_endpoint")?.trim() || "";
+function prioritizeStoredEndpoint(endpoints, storageKey) {
+  const storedEndpoint = localStorage.getItem(storageKey)?.trim() || "";
   if (!storedEndpoint) {
     return endpoints;
   }
@@ -166,7 +159,12 @@ function prioritizeStoredEndpoint(endpoints) {
 }
 
 const API_UPLOAD_ENDPOINT_CANDIDATES = prioritizeStoredEndpoint(
-  buildUploadEndpointCandidates(API_BASE_CANDIDATES)
+  buildEndpointCandidates(API_BASE_CANDIDATES, "/upload"),
+  "visionsort_api_upload_endpoint"
+);
+const API_ASYNC_UPLOAD_ENDPOINT_CANDIDATES = prioritizeStoredEndpoint(
+  buildEndpointCandidates(API_BASE_CANDIDATES, "/upload/async"),
+  "visionsort_api_async_upload_endpoint"
 );
 
 function escapeHtml(value) {
@@ -187,6 +185,12 @@ function bytesToSize(bytes) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function hasAllowedImageType(file) {
@@ -214,6 +218,53 @@ function setStatus(text) {
   statusText.textContent = text;
 }
 
+function setProgress(percent, labelText, metaText) {
+  if (!progressWrap || !progressFill || !progressPercent || !progressMeta || !progressLabel) {
+    return;
+  }
+
+  const safePercent = clamp(Math.round(percent), 0, 100);
+  progressWrap.classList.remove("hidden");
+  progressFill.style.width = `${safePercent}%`;
+  progressPercent.textContent = `${safePercent}%`;
+  progressLabel.textContent = labelText;
+  progressMeta.textContent = metaText;
+}
+
+function resetProgress() {
+  if (!progressWrap || !progressFill || !progressPercent || !progressMeta || !progressLabel) {
+    return;
+  }
+
+  progressWrap.classList.add("hidden");
+  progressFill.style.width = "0%";
+  progressPercent.textContent = "0%";
+  progressLabel.textContent = "Analysis progress";
+  progressMeta.textContent = "Waiting to start...";
+}
+
+function startPseudoProgress() {
+  stopPseudoProgress();
+  pseudoProgressValue = 7;
+  setProgress(pseudoProgressValue, "Analysis progress", "Analyzing images...");
+
+  pseudoProgressTimer = window.setInterval(() => {
+    pseudoProgressValue = Math.min(94, pseudoProgressValue + Math.max(1, Math.ceil((94 - pseudoProgressValue) * 0.12)));
+    setProgress(pseudoProgressValue, "Analysis progress", "Analyzing images...");
+  }, 480);
+}
+
+function stopPseudoProgress(finalPercent = null, finalMeta = "") {
+  if (pseudoProgressTimer) {
+    window.clearInterval(pseudoProgressTimer);
+    pseudoProgressTimer = null;
+  }
+
+  if (Number.isFinite(finalPercent)) {
+    setProgress(Number(finalPercent), "Analysis progress", finalMeta || "Analysis complete.");
+  }
+}
+
 function setUploadingState(uploading) {
   isUploading = uploading;
   analyzeBtn.disabled = uploading || selectedFiles.length === 0;
@@ -230,13 +281,13 @@ function setUploadingState(uploading) {
   }
 }
 
-function updateQueueMetrics() {
+function updateQueueMetrics(preserveStatus = false) {
   const count = selectedFiles.length;
   queueCount.textContent = `${count} Selected`;
   metricSelected.textContent = String(count);
 
-  if (!isUploading) {
-    const apiHint = API_UPLOAD_ENDPOINT_CANDIDATES[0] || "not configured";
+  if (!isUploading && !preserveStatus) {
+    const apiHint = API_ASYNC_UPLOAD_ENDPOINT_CANDIDATES[0] || API_UPLOAD_ENDPOINT_CANDIDATES[0] || "not configured";
     setStatus(count ? "Queue ready. Click Analyze Images." : `Ready for analysis. API: ${apiHint}`);
   }
 
@@ -416,6 +467,7 @@ function addFilesToQueue(fileList) {
     selectedFiles = [...selectedFiles, ...additions];
     renderQueue();
     updateQueueMetrics();
+    resetProgress();
   }
 }
 
@@ -427,12 +479,23 @@ function clearQueue() {
   imageInput.value = "";
   renderQueue();
   updateQueueMetrics();
+  resetProgress();
 }
 
 function buildFormData(files) {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
   return formData;
+}
+
+function normalizeResults(payload) {
+  return {
+    good: Array.isArray(payload.good) ? payload.good : [],
+    blurry: Array.isArray(payload.blurry) ? payload.blurry : [],
+    dark: Array.isArray(payload.dark) ? payload.dark : [],
+    overexposed: Array.isArray(payload.overexposed) ? payload.overexposed : [],
+    duplicates: Array.isArray(payload.duplicates) ? payload.duplicates : [],
+  };
 }
 
 async function getResponseErrorMessage(response) {
@@ -485,6 +548,202 @@ async function attemptUpload(endpoint, files) {
   }
 }
 
+async function fetchJobSnapshot(endpoint) {
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        endpoint,
+        error: await getResponseErrorMessage(response),
+      };
+    }
+
+    return {
+      ok: true,
+      endpoint,
+      data: await response.json(),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      endpoint,
+      error: error instanceof Error ? error.message : "Unexpected job polling error.",
+    };
+  }
+}
+
+function buildStatusEndpointCandidates(uploadEndpoint, payload) {
+  const candidates = [];
+  const jobId = payload?.job_id ? String(payload.job_id) : "";
+
+  if (typeof payload?.api_status_endpoint === "string" && payload.api_status_endpoint.trim()) {
+    candidates.push(payload.api_status_endpoint.trim());
+  }
+  if (typeof payload?.status_endpoint === "string" && payload.status_endpoint.trim()) {
+    candidates.push(payload.status_endpoint.trim());
+  }
+
+  if (jobId) {
+    const base = normalizeApiBase(uploadEndpoint.replace(/\/upload\/async$/, ""));
+    if (base) {
+      candidates.push(`${base}/jobs/${encodeURIComponent(jobId)}`);
+    }
+  }
+
+  return dedupeUrls(candidates);
+}
+
+function isResultPayload(payload) {
+  return payload && typeof payload === "object" && CATEGORIES.every((key) => Array.isArray(payload[key]));
+}
+
+async function pollJobUntilDone(statusEndpointCandidates) {
+  const startedAt = Date.now();
+  let activeEndpoint = "";
+  let lastError = "Unable to fetch job status.";
+
+  while (Date.now() - startedAt < ASYNC_TIMEOUT_MS) {
+    const probeEndpoints = activeEndpoint
+      ? [activeEndpoint, ...statusEndpointCandidates.filter((endpoint) => endpoint !== activeEndpoint)]
+      : statusEndpointCandidates;
+    let snapshot = null;
+
+    for (const endpoint of probeEndpoints) {
+      const result = await fetchJobSnapshot(endpoint);
+      if (result.ok) {
+        snapshot = result;
+        activeEndpoint = endpoint;
+        break;
+      }
+      lastError = `${endpoint} -> ${result.error}`;
+    }
+
+    if (!snapshot) {
+      throw new Error(lastError);
+    }
+
+    const job = snapshot.data || {};
+    const total = Math.max(0, Number(job.total_files || selectedFiles.length || 0));
+    const processed = Math.max(0, Number(job.processed_files || 0));
+    const phase = String(job.phase || job.status || "processing");
+
+    if (phase === "finalizing") {
+      setProgress(99, "Finalizing", `Processed ${processed}/${total} files. Saving outputs...`);
+    } else if (job.status === "completed") {
+      setProgress(100, "Completed", `Processed ${processed || total}/${total || processed} files.`);
+    } else {
+      const percent = total ? Math.round((processed / total) * 100) : 0;
+      setProgress(percent, "Analysis progress", `Processed ${processed}/${total} files.`);
+    }
+
+    setStatus(typeof job.message === "string" && job.message ? job.message : "Analyzing images...");
+
+    if (job.status === "completed") {
+      return {
+        endpoint: activeEndpoint,
+        job,
+      };
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "Background job failed.");
+    }
+
+    await sleep(ASYNC_POLL_INTERVAL_MS);
+  }
+
+  throw new Error("Timed out while waiting for background analysis to complete.");
+}
+
+async function runAsyncUploadFlow(files) {
+  const failures = [];
+
+  for (const endpoint of API_ASYNC_UPLOAD_ENDPOINT_CANDIDATES) {
+    setProgress(4, "Queueing", "Sending files to async analysis endpoint...");
+    const startResult = await attemptUpload(endpoint, files);
+
+    if (!startResult.ok) {
+      failures.push(`${endpoint} -> ${startResult.error}`);
+      if (startResult.status >= 400 && startResult.status < 500 && startResult.status !== 404) {
+        break;
+      }
+      continue;
+    }
+
+    if (isResultPayload(startResult.data)) {
+      localStorage.setItem("visionsort_api_upload_endpoint", endpoint.replace(/\/async$/, ""));
+      return {
+        ok: true,
+        mode: "sync-response",
+        endpoint,
+        results: normalizeResults(startResult.data),
+      };
+    }
+
+    const statusCandidates = buildStatusEndpointCandidates(endpoint, startResult.data);
+    if (!statusCandidates.length) {
+      failures.push(`${endpoint} -> Missing status endpoint in async response.`);
+      continue;
+    }
+
+    try {
+      localStorage.setItem("visionsort_api_async_upload_endpoint", endpoint);
+      const polled = await pollJobUntilDone(statusCandidates);
+      if (!isResultPayload(polled.job.results || {})) {
+        throw new Error("Async job completed without valid categorized results.");
+      }
+
+      return {
+        ok: true,
+        mode: "async",
+        endpoint,
+        statusEndpoint: polled.endpoint,
+        results: normalizeResults(polled.job.results),
+      };
+    } catch (error) {
+      failures.push(`${endpoint} -> ${error instanceof Error ? error.message : "Unknown async polling error."}`);
+    }
+  }
+
+  return {
+    ok: false,
+    failures,
+  };
+}
+
+async function runSyncUploadFlow(files) {
+  const failures = [];
+  startPseudoProgress();
+
+  for (const endpoint of API_UPLOAD_ENDPOINT_CANDIDATES) {
+    const result = await attemptUpload(endpoint, files);
+    if (result.ok) {
+      stopPseudoProgress(100, "Analysis complete.");
+      localStorage.setItem("visionsort_api_upload_endpoint", result.endpoint);
+      return {
+        ok: true,
+        endpoint,
+        results: normalizeResults(result.data),
+      };
+    }
+
+    failures.push(`${result.endpoint} -> ${result.error}`);
+    if (result.status >= 400 && result.status < 500 && result.status !== 404) {
+      break;
+    }
+  }
+
+  stopPseudoProgress(0, "Analysis failed.");
+  return {
+    ok: false,
+    failures,
+  };
+}
+
 async function uploadImages() {
   if (!selectedFiles.length || isUploading) {
     return;
@@ -492,50 +751,49 @@ async function uploadImages() {
 
   clearError();
   setUploadingState(true);
+  let successful = false;
 
   try {
-    const failures = [];
-
-    for (const endpoint of API_UPLOAD_ENDPOINT_CANDIDATES) {
-      const result = await attemptUpload(endpoint, selectedFiles);
-      if (result.ok) {
-        localStorage.setItem("visionsort_api_upload_endpoint", result.endpoint);
-
-        lastResultsByCategory = {
-          good: Array.isArray(result.data.good) ? result.data.good : [],
-          blurry: Array.isArray(result.data.blurry) ? result.data.blurry : [],
-          dark: Array.isArray(result.data.dark) ? result.data.dark : [],
-          overexposed: Array.isArray(result.data.overexposed) ? result.data.overexposed : [],
-          duplicates: Array.isArray(result.data.duplicates) ? result.data.duplicates : [],
-        };
-
-        updateSummaryChips(lastResultsByCategory);
-        renderResultCards();
-        setStatus(`Completed via ${result.endpoint}`);
-        return;
-      }
-
-      failures.push(`${result.endpoint} -> ${result.error}`);
-
-      if (result.status >= 400 && result.status < 500 && result.status !== 404) {
-        break;
-      }
+    const asyncFlow = await runAsyncUploadFlow(selectedFiles);
+    if (asyncFlow.ok) {
+      lastResultsByCategory = asyncFlow.results;
+      updateSummaryChips(lastResultsByCategory);
+      renderResultCards();
+      setStatus(`Completed via ${asyncFlow.endpoint}`);
+      successful = true;
+      return;
     }
 
-    const summary = failures.length
-      ? failures[failures.length - 1]
-      : "No upload endpoint was reachable.";
-    throw new Error(`${summary} (Tried: ${API_UPLOAD_ENDPOINT_CANDIDATES.join(", ")})`);
+    const syncFlow = await runSyncUploadFlow(selectedFiles);
+    if (syncFlow.ok) {
+      lastResultsByCategory = syncFlow.results;
+      updateSummaryChips(lastResultsByCategory);
+      renderResultCards();
+      setStatus(`Completed via ${syncFlow.endpoint}`);
+      successful = true;
+      return;
+    }
+
+    const allFailures = [...asyncFlow.failures, ...syncFlow.failures];
+    const summary = allFailures.length ? allFailures[allFailures.length - 1] : "No upload endpoint was reachable.";
+    throw new Error(summary);
   } catch (error) {
     showError(error instanceof Error ? error.message : "Unexpected upload failure.");
     setStatus("Upload failed. Fix the issue and try again.");
   } finally {
     setUploadingState(false);
-    updateQueueMetrics();
+    updateQueueMetrics(successful);
+    if (!successful) {
+      stopPseudoProgress(0, "Analysis failed.");
+    }
   }
 }
 
 function handleQueueClick(event) {
+  if (isUploading) {
+    return;
+  }
+
   const button = event.target.closest(".queue-delete");
   if (!button) {
     return;
@@ -603,3 +861,4 @@ updateQueueMetrics();
 updateSummaryChips(lastResultsByCategory);
 renderResultCards();
 setFilter("all");
+resetProgress();

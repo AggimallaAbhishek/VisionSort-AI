@@ -356,6 +356,67 @@ body {
   gap: 10px;
 }
 
+.analysis-progress {
+  margin-top: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(24, 38, 78, 0.78), rgba(14, 25, 56, 0.85));
+  padding: 10px 12px 11px;
+}
+
+.analysis-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.analysis-progress-head strong {
+  font-family: "Manrope", sans-serif;
+  color: #d6e4ff;
+  font-size: 0.94rem;
+}
+
+.analysis-progress-head span {
+  color: #b9cbf1;
+  font-size: 0.84rem;
+  font-family: "Manrope", sans-serif;
+  font-weight: 700;
+}
+
+.analysis-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(72, 97, 153, 0.42);
+  overflow: hidden;
+}
+
+.analysis-progress-track > span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #16d79b, #2f5dff 52%, #54a2ff);
+  transition: width 0.28s ease;
+  position: relative;
+}
+
+.analysis-progress-track > span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 20%, rgba(255, 255, 255, 0.22) 46%, transparent 70%);
+  animation: loading-sheen 1.2s linear infinite;
+}
+
+.analysis-progress p {
+  margin: 8px 0 0;
+  color: #9db2df;
+  font-size: 0.8rem;
+  font-family: "Manrope", sans-serif;
+}
+
 .queue-item {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -693,6 +754,15 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes loading-sheen {
+  from {
+    transform: translateX(-80%);
+  }
+  to {
+    transform: translateX(120%);
   }
 }
 
