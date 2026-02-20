@@ -580,18 +580,41 @@ async function fetchJobSnapshot(endpoint) {
 function buildStatusEndpointCandidates(uploadEndpoint, payload) {
   const candidates = [];
   const jobId = payload?.job_id ? String(payload.job_id) : "";
+  let uploadBase = "";
+
+  try {
+    uploadBase = new URL(uploadEndpoint, window.location.origin).origin;
+  } catch {
+    uploadBase = window.location.origin;
+  }
+
+  function addCandidate(pathOrUrl) {
+    if (!pathOrUrl || typeof pathOrUrl !== "string") {
+      return;
+    }
+    const trimmed = pathOrUrl.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    candidates.push(trimmed);
+    if (trimmed.startsWith("/")) {
+      candidates.push(`${uploadBase}${trimmed}`);
+    }
+  }
 
   if (typeof payload?.api_status_endpoint === "string" && payload.api_status_endpoint.trim()) {
-    candidates.push(payload.api_status_endpoint.trim());
+    addCandidate(payload.api_status_endpoint);
   }
   if (typeof payload?.status_endpoint === "string" && payload.status_endpoint.trim()) {
-    candidates.push(payload.status_endpoint.trim());
+    addCandidate(payload.status_endpoint);
   }
 
   if (jobId) {
     const base = normalizeApiBase(uploadEndpoint.replace(/\/upload\/async$/, ""));
     if (base) {
       candidates.push(`${base}/jobs/${encodeURIComponent(jobId)}`);
+      candidates.push(`${base}/api/jobs/${encodeURIComponent(jobId)}`);
     }
   }
 
@@ -606,6 +629,7 @@ async function pollJobUntilDone(statusEndpointCandidates) {
   const startedAt = Date.now();
   let activeEndpoint = "";
   let lastError = "Unable to fetch job status.";
+  let firstPendingMessageShown = false;
 
   while (Date.now() - startedAt < ASYNC_TIMEOUT_MS) {
     const probeEndpoints = activeEndpoint
@@ -624,7 +648,12 @@ async function pollJobUntilDone(statusEndpointCandidates) {
     }
 
     if (!snapshot) {
-      throw new Error(lastError);
+      if (!firstPendingMessageShown) {
+        setProgress(12, "Queued", "Waiting for analysis worker to start...");
+        firstPendingMessageShown = true;
+      }
+      await sleep(ASYNC_POLL_INTERVAL_MS);
+      continue;
     }
 
     const job = snapshot.data || {};
@@ -656,7 +685,7 @@ async function pollJobUntilDone(statusEndpointCandidates) {
     await sleep(ASYNC_POLL_INTERVAL_MS);
   }
 
-  throw new Error("Timed out while waiting for background analysis to complete.");
+  throw new Error(`Timed out while waiting for analysis. Last status error: ${lastError}`);
 }
 
 async function runAsyncUploadFlow(files) {
@@ -778,7 +807,9 @@ async function uploadImages() {
     const summary = allFailures.length ? allFailures[allFailures.length - 1] : "No upload endpoint was reachable.";
     throw new Error(summary);
   } catch (error) {
-    showError(error instanceof Error ? error.message : "Unexpected upload failure.");
+    const message = error instanceof Error ? error.message : "Unexpected upload failure.";
+    showError(message);
+    setProgress(0, "Analysis failed", message);
     setStatus("Upload failed. Fix the issue and try again.");
   } finally {
     setUploadingState(false);
