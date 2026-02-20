@@ -291,6 +291,16 @@ function setStatus(text) {
   statusText.textContent = text;
 }
 
+function requestIdSuffix(requestId) {
+  return requestId ? ` [req:${String(requestId).slice(0, 8)}]` : "";
+}
+
+function logRequestTrace(action, endpoint, requestId, extra = "") {
+  const requestPart = requestId ? ` request_id=${requestId}` : "";
+  const extraPart = extra ? ` ${extra}` : "";
+  console.info(`[VisionSort][${action}] ${endpoint}${requestPart}${extraPart}`);
+}
+
 function setProgress(percent, labelText, metaText) {
   if (!progressWrap || !progressFill || !progressPercent || !progressMeta || !progressLabel) {
     return;
@@ -586,22 +596,29 @@ function normalizeResults(payload) {
 }
 
 async function getResponseErrorMessage(response) {
+  const responseRequestId = response.headers.get("x-request-id") || "";
   const raw = await response.text();
   if (!raw) {
-    return `Upload failed (${response.status}).`;
+    return `Upload failed (${response.status}).${requestIdSuffix(responseRequestId)}`;
   }
 
   try {
     const payload = JSON.parse(raw);
+    if (payload?.error && typeof payload.error.message === "string") {
+      const errorCode = typeof payload.error.code === "string" ? `${payload.error.code}: ` : "";
+      const payloadRequestId = typeof payload.error.request_id === "string" ? payload.error.request_id : "";
+      return `Upload failed (${response.status}): ${errorCode}${payload.error.message}${requestIdSuffix(payloadRequestId || responseRequestId)}`;
+    }
+
     if (payload && typeof payload.detail === "string" && payload.detail.trim()) {
-      return `Upload failed (${response.status}): ${payload.detail}`;
+      return `Upload failed (${response.status}): ${payload.detail}${requestIdSuffix(responseRequestId)}`;
     }
   } catch {
     // Fall through to raw text output.
   }
 
   const snippet = raw.length > 220 ? `${raw.slice(0, 220)}...` : raw;
-  return `Upload failed (${response.status}): ${snippet}`;
+  return `Upload failed (${response.status}): ${snippet}${requestIdSuffix(responseRequestId)}`;
 }
 
 async function attemptUpload(endpoint, files) {
@@ -610,26 +627,32 @@ async function attemptUpload(endpoint, files) {
       method: "POST",
       body: buildFormData(files),
     });
+    const requestId = response.headers.get("x-request-id") || "";
 
     if (!response.ok) {
       return {
         ok: false,
         status: response.status,
         endpoint,
+        requestId,
         error: await getResponseErrorMessage(response),
       };
     }
 
+    const payload = await response.json();
+    logRequestTrace("upload", endpoint, requestId, `status=${response.status}`);
     return {
       ok: true,
       endpoint,
-      data: await response.json(),
+      requestId,
+      data: payload,
     };
   } catch (error) {
     return {
       ok: false,
       status: 0,
       endpoint,
+      requestId: "",
       error: error instanceof Error ? error.message : "Unexpected network error.",
     };
   }
@@ -641,24 +664,29 @@ async function fetchJobSnapshot(endpoint) {
       method: "GET",
       cache: "no-store",
     });
+    const requestId = response.headers.get("x-request-id") || "";
 
     if (!response.ok) {
       return {
         ok: false,
         endpoint,
+        requestId,
         error: await getResponseErrorMessage(response),
       };
     }
 
+    const payload = await response.json();
     return {
       ok: true,
       endpoint,
-      data: await response.json(),
+      requestId,
+      data: payload,
     };
   } catch (error) {
     return {
       ok: false,
       endpoint,
+      requestId: "",
       error: error instanceof Error ? error.message : "Unexpected job polling error.",
     };
   }
@@ -718,6 +746,7 @@ async function pollJobUntilDone(statusEndpointCandidates) {
   let lastError = "Unable to fetch job status.";
   let firstPendingMessageShown = false;
   let queuedSinceMs = 0;
+  let lastRequestId = "";
 
   while (Date.now() - startedAt < ASYNC_TIMEOUT_MS) {
     const probeEndpoints = activeEndpoint
@@ -730,6 +759,8 @@ async function pollJobUntilDone(statusEndpointCandidates) {
       if (result.ok) {
         snapshot = result;
         activeEndpoint = endpoint;
+        lastRequestId = result.requestId || lastRequestId;
+        logRequestTrace("job-status", endpoint, result.requestId);
         break;
       }
       lastError = `${endpoint} -> ${result.error}`;
@@ -768,6 +799,7 @@ async function pollJobUntilDone(statusEndpointCandidates) {
     if (job.status === "completed") {
       return {
         endpoint: activeEndpoint,
+        requestId: lastRequestId,
         job,
       };
     }
@@ -813,6 +845,7 @@ async function runAsyncUploadFlow(files) {
         ok: true,
         mode: "sync-response",
         endpoint,
+        requestId: startResult.requestId || "",
         results: normalizeResults(startResult.data),
       };
     }
@@ -835,6 +868,7 @@ async function runAsyncUploadFlow(files) {
         mode: "async",
         endpoint,
         statusEndpoint: polled.endpoint,
+        requestId: polled.requestId || startResult.requestId || "",
         results: normalizeResults(polled.job.results),
       };
     } catch (error) {
@@ -860,6 +894,7 @@ async function runSyncUploadFlow(files) {
       return {
         ok: true,
         endpoint,
+        requestId: result.requestId || "",
         results: normalizeResults(result.data),
       };
     }
@@ -877,7 +912,7 @@ async function runSyncUploadFlow(files) {
   };
 }
 
-function applySuccessfulResults(endpoint, results) {
+function applySuccessfulResults(endpoint, results, requestId = "") {
   lastResultsByCategory = results;
   updateSummaryChips(lastResultsByCategory);
   renderResultCards();
@@ -894,7 +929,7 @@ function applySuccessfulResults(endpoint, results) {
   imageInput.value = "";
   renderQueue();
   updateQueueMetrics(true);
-  setStatus(`Completed via ${endpoint} in ${elapsed}.`);
+  setStatus(`Completed via ${endpoint} in ${elapsed}.${requestIdSuffix(requestId)}`);
 }
 
 async function uploadImages() {
@@ -911,14 +946,14 @@ async function uploadImages() {
   try {
     const asyncFlow = await runAsyncUploadFlow(selectedFiles);
     if (asyncFlow.ok) {
-      applySuccessfulResults(asyncFlow.endpoint, asyncFlow.results);
+      applySuccessfulResults(asyncFlow.endpoint, asyncFlow.results, asyncFlow.requestId || "");
       successful = true;
       return;
     }
 
     const syncFlow = await runSyncUploadFlow(selectedFiles);
     if (syncFlow.ok) {
-      applySuccessfulResults(syncFlow.endpoint, syncFlow.results);
+      applySuccessfulResults(syncFlow.endpoint, syncFlow.results, syncFlow.requestId || "");
       successful = true;
       return;
     }

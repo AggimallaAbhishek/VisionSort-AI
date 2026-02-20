@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
+from contextvars import ContextVar
 from io import BytesIO
 import logging
 import os
@@ -18,8 +20,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from PIL import Image
 
 from aws_client import AWSService
@@ -43,6 +47,8 @@ DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "anonymous")
 PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
+RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
+RATE_LIMIT_MAX_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "30")))
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg",
@@ -96,6 +102,139 @@ upload_jobs: Dict[str, Dict[str, Any]] = {}
 upload_jobs_lock = Lock()
 predict_quality_func: Callable[[Image.Image], str] | None = None
 predict_quality_init_attempted = False
+rate_limit_events: Dict[str, deque[float]] = {}
+rate_limit_lock = Lock()
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
+
+REQUEST_ID_HEADER = "X-Request-ID"
+RATE_LIMITED_PATHS = {"/upload", "/api/upload", "/upload/async", "/api/upload/async"}
+HTTP_ERROR_CODE_MAP = {
+    400: "BAD_REQUEST",
+    401: "UNAUTHORIZED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    405: "METHOD_NOT_ALLOWED",
+    413: "FILE_TOO_LARGE",
+    415: "UNSUPPORTED_MEDIA_TYPE",
+    422: "VALIDATION_ERROR",
+    429: "RATE_LIMIT_EXCEEDED",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+
+def current_request_id() -> str:
+    """Return current request ID from context."""
+    request_id = (request_id_ctx.get() or "").strip()
+    return request_id or "unknown"
+
+
+def extract_client_ip(request: Request) -> str:
+    """Extract best-effort client IP from proxy headers or request client."""
+    forwarded_for = request.headers.get("x-forwarded-for", "").strip()
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def is_rate_limited_request(request: Request) -> bool:
+    """Return True when request should be subject to upload rate limiting."""
+    return request.method.upper() == "POST" and request.url.path in RATE_LIMITED_PATHS
+
+
+def consume_rate_limit_token(client_ip: str) -> Tuple[bool, int]:
+    """Consume one request token, returning (allowed, retry_after_seconds)."""
+    now = time.time()
+
+    with rate_limit_lock:
+        bucket = rate_limit_events.setdefault(client_ip, deque())
+        while bucket and now - bucket[0] > RATE_LIMIT_WINDOW_SECONDS:
+            bucket.popleft()
+
+        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+            retry_after_seconds = max(1, int(RATE_LIMIT_WINDOW_SECONDS - (now - bucket[0])))
+            return False, retry_after_seconds
+
+        bucket.append(now)
+        return True, 0
+
+
+def build_error_payload(
+    *,
+    code: str,
+    message: str,
+    request_id: str | None = None,
+    details: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Build structured error response payload."""
+    error: Dict[str, Any] = {
+        "code": code,
+        "message": message,
+        "request_id": request_id or current_request_id(),
+    }
+    if details is not None:
+        error["details"] = details
+    return {"error": error}
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next: Callable[[Request], Any]) -> Any:
+    """Attach request IDs, enforce basic upload rate limit, and log requests."""
+    request_id = (request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex).strip()[:128]
+    context_token = request_id_ctx.set(request_id)
+    request.state.request_id = request_id
+
+    method = request.method
+    path = request.url.path
+    client_ip = extract_client_ip(request)
+    started_at = time.perf_counter()
+    status_code = 500
+    rate_limited = False
+
+    try:
+        if is_rate_limited_request(request):
+            allowed, retry_after_seconds = consume_rate_limit_token(client_ip)
+            if not allowed:
+                rate_limited = True
+                response = JSONResponse(
+                    status_code=429,
+                    content=build_error_payload(
+                        code="RATE_LIMIT_EXCEEDED",
+                        message=(
+                            f"Too many upload requests. Maximum {RATE_LIMIT_MAX_REQUESTS} "
+                            f"requests per {RATE_LIMIT_WINDOW_SECONDS} seconds."
+                        ),
+                        request_id=request_id,
+                        details={
+                            "retry_after_seconds": retry_after_seconds,
+                            "limit": RATE_LIMIT_MAX_REQUESTS,
+                            "window_seconds": RATE_LIMIT_WINDOW_SECONDS,
+                        },
+                    ),
+                )
+                response.headers["Retry-After"] = str(retry_after_seconds)
+                response.headers[REQUEST_ID_HEADER] = request_id
+                status_code = response.status_code
+                return response
+
+        response = await call_next(request)
+        response.headers[REQUEST_ID_HEADER] = request_id
+        status_code = response.status_code
+        return response
+    finally:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        logger.info(
+            "request_id=%s method=%s path=%s status=%s ip=%s rate_limited=%s duration_ms=%.2f",
+            request_id,
+            method,
+            path,
+            status_code,
+            client_ip,
+            rate_limited,
+            duration_ms,
+        )
+        request_id_ctx.reset(context_token)
 
 
 @app.get("/")
@@ -117,8 +256,75 @@ def root() -> Dict[str, Any]:
             "max_file_size_mb": MAX_FILE_SIZE_MB,
             "max_files": MAX_FILES,
             "max_image_width": MAX_IMAGE_WIDTH,
+            "rate_limit_max_requests": RATE_LIMIT_MAX_REQUESTS,
+            "rate_limit_window_seconds": RATE_LIMIT_WINDOW_SECONDS,
         },
     }
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Return structured payloads for HTTP errors."""
+    request_id = getattr(request.state, "request_id", current_request_id())
+    error_code = HTTP_ERROR_CODE_MAP.get(exc.status_code, "HTTP_ERROR")
+
+    if isinstance(exc.detail, str):
+        message = exc.detail
+        details: Dict[str, Any] = {"status_code": exc.status_code}
+    elif isinstance(exc.detail, dict):
+        details = dict(exc.detail)
+        message = str(details.get("message") or details.get("detail") or "Request failed.")
+        details.setdefault("status_code", exc.status_code)
+    else:
+        message = str(exc.detail)
+        details = {"status_code": exc.status_code}
+
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content=build_error_payload(
+            code=error_code,
+            message=message,
+            request_id=request_id,
+            details=details,
+        ),
+    )
+    response.headers[REQUEST_ID_HEADER] = request_id
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Return structured payloads for validation errors."""
+    request_id = getattr(request.state, "request_id", current_request_id())
+    response = JSONResponse(
+        status_code=422,
+        content=build_error_payload(
+            code="VALIDATION_ERROR",
+            message="Request validation failed.",
+            request_id=request_id,
+            details={"status_code": 422, "errors": exc.errors()},
+        ),
+    )
+    response.headers[REQUEST_ID_HEADER] = request_id
+    return response
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all error handler for consistent API error responses."""
+    request_id = getattr(request.state, "request_id", current_request_id())
+    logger.exception("Unhandled exception request_id=%s path=%s", request_id, request.url.path)
+
+    response = JSONResponse(
+        status_code=500,
+        content=build_error_payload(
+            code="INTERNAL_ERROR",
+            message="Internal server error.",
+            request_id=request_id,
+        ),
+    )
+    response.headers[REQUEST_ID_HEADER] = request_id
+    return response
 
 
 def sanitize_filename(filename: str) -> str:
@@ -607,7 +813,7 @@ def run_upload_job(job_id: str, payloads: List[UploadPayload]) -> None:
 
 @app.post("/upload")
 @app.post("/api/upload")
-async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, List[Dict[str, Any]]]:
+async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
     """Process uploaded files synchronously and return categorized payloads."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
@@ -615,7 +821,9 @@ async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, List[D
         raise HTTPException(status_code=400, detail=f"Too many files. Maximum allowed is {MAX_FILES}.")
 
     payloads = await read_upload_payloads(files)
-    return process_upload_payloads(payloads)
+    results = process_upload_payloads(payloads)
+    results["request_id"] = current_request_id()
+    return results
 
 
 @app.post("/upload/async")
@@ -637,6 +845,7 @@ async def upload_images_async(files: List[UploadFile] = File(...)) -> Dict[str, 
         "total_files": len(payloads),
         "status_endpoint": f"/jobs/{job_id}",
         "api_status_endpoint": f"/api/jobs/{job_id}",
+        "request_id": current_request_id(),
     }
 
 
@@ -647,4 +856,5 @@ def get_upload_job(job_id: str) -> Dict[str, Any]:
     snapshot = get_upload_job_snapshot(job_id)
     if not snapshot:
         raise HTTPException(status_code=404, detail="Job not found.")
+    snapshot["request_id"] = current_request_id()
     return snapshot
