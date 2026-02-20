@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from io import BytesIO
 import logging
 import os
 import re
@@ -25,7 +26,6 @@ from aws_client import AWSService
 from utils.blur_detection import detect_blur
 from utils.brightness_check import analyze_brightness
 from utils.duplicate_check import is_duplicate
-from utils.model_predict import predict_quality
 
 load_dotenv()
 
@@ -44,12 +44,26 @@ PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
 
-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/jpg",
+    "image/pjpeg",
+    "image/png",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "image/gif",
+}
 EXTENSION_TO_CONTENT_TYPE = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
+    ".jfif": "image/jpeg",
     ".png": "image/png",
     ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".gif": "image/gif",
 }
 
 app = FastAPI(title="VisionSort AI", version="1.1.0")
@@ -80,6 +94,8 @@ UploadPayload = Dict[str, Any]
 ProgressHook = Callable[[int, int, str, str], None]
 upload_jobs: Dict[str, Dict[str, Any]] = {}
 upload_jobs_lock = Lock()
+predict_quality_func: Callable[[Image.Image], str] | None = None
+predict_quality_init_attempted = False
 
 
 @app.get("/")
@@ -124,8 +140,17 @@ def decode_image(raw_bytes: bytes) -> np.ndarray:
     """Decode image bytes to an OpenCV BGR array."""
     arr = np.frombuffer(raw_bytes, dtype=np.uint8)
     image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError("Failed to decode image bytes.")
+    if image is not None:
+        return image
+
+    # Fallback decoder for images that OpenCV fails to parse directly.
+    try:
+        with Image.open(BytesIO(raw_bytes)) as pil_img:
+            rgb = pil_img.convert("RGB")
+        return cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
+    except Exception as exc:
+        raise ValueError("Failed to decode image bytes.") from exc
+
     return image
 
 
@@ -211,6 +236,33 @@ def build_metadata_row(
         "final_status": final_status,
         "created_at": datetime.now(timezone.utc),
     }
+
+
+def predict_quality_label(image: Image.Image) -> str:
+    """Return AI label using lazy model initialization to reduce memory usage."""
+    if not ENABLE_AI_LABEL:
+        return "disabled"
+
+    global predict_quality_func, predict_quality_init_attempted
+
+    if predict_quality_func is None and not predict_quality_init_attempted:
+        predict_quality_init_attempted = True
+        try:
+            from utils.model_predict import predict_quality as loaded_predict_quality
+
+            predict_quality_func = loaded_predict_quality
+        except Exception as exc:
+            logger.exception("AI model initialization failed: %s", exc)
+            return "model_unavailable"
+
+    if predict_quality_func is None:
+        return "model_unavailable"
+
+    try:
+        return predict_quality_func(image)
+    except Exception as exc:
+        logger.exception("AI inference failed: %s", exc)
+        return "model_unavailable"
 
 
 def build_results_template() -> Dict[str, List[Dict[str, Any]]]:
@@ -348,7 +400,7 @@ def process_upload_payloads(
             blur_score = detect_blur(resized_image)
             brightness_level = analyze_brightness(resized_image)
             duplicate = is_duplicate(pil_image, seen_hashes, threshold=DUPLICATE_HASH_DISTANCE)
-            ai_label = predict_quality(pil_image) if ENABLE_AI_LABEL else "disabled"
+            ai_label = predict_quality_label(pil_image)
             final_status = choose_final_status(blur_score, brightness_level, duplicate)
 
             preview_bytes = encode_preview_jpeg(resized_image)

@@ -16,11 +16,22 @@ const configuredApiBase = (
 const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai.onrender.com";
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-const ALLOWED_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
-const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
+const ALLOWED_TYPES = new Set([
+  "image/jpeg",
+  "image/jpg",
+  "image/pjpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+  "image/bmp",
+  "image/tiff",
+]);
+const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "jfif", "png", "webp", "gif", "bmp", "tif", "tiff"]);
 const CATEGORIES = ["good", "blurry", "dark", "overexposed", "duplicates"];
 const ASYNC_POLL_INTERVAL_MS = 700;
 const ASYNC_TIMEOUT_MS = 8 * 60 * 1000;
+const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 18 * 1000;
+const ASYNC_QUEUE_STALL_TIMEOUT_MS = 90 * 1000;
 
 const dropZone = document.getElementById("dropZone");
 const imageInput = document.getElementById("imageInput");
@@ -685,6 +696,7 @@ async function pollJobUntilDone(statusEndpointCandidates) {
   let activeEndpoint = "";
   let lastError = "Unable to fetch job status.";
   let firstPendingMessageShown = false;
+  let queuedSinceMs = 0;
 
   while (Date.now() - startedAt < ASYNC_TIMEOUT_MS) {
     const probeEndpoints = activeEndpoint
@@ -703,6 +715,11 @@ async function pollJobUntilDone(statusEndpointCandidates) {
     }
 
     if (!snapshot) {
+      const elapsedSinceStart = Date.now() - startedAt;
+      if (elapsedSinceStart > ASYNC_STATUS_DISCOVERY_TIMEOUT_MS) {
+        throw new Error(`Could not reach job status endpoint. ${lastError}`);
+      }
+
       if (!firstPendingMessageShown) {
         setProgress(12, "Queued", "Waiting for analysis worker to start...");
         firstPendingMessageShown = true;
@@ -735,6 +752,17 @@ async function pollJobUntilDone(statusEndpointCandidates) {
     }
     if (job.status === "failed") {
       throw new Error(job.error || "Background job failed.");
+    }
+
+    if (job.status === "queued") {
+      if (!queuedSinceMs) {
+        queuedSinceMs = Date.now();
+      }
+      if (Date.now() - queuedSinceMs > ASYNC_QUEUE_STALL_TIMEOUT_MS) {
+        throw new Error("Async job stayed queued too long. Falling back to direct upload.");
+      }
+    } else {
+      queuedSinceMs = 0;
     }
 
     await sleep(ASYNC_POLL_INTERVAL_MS);
