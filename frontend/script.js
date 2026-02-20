@@ -51,6 +51,7 @@ const progressFill = document.getElementById("progressFill");
 const progressPercent = document.getElementById("progressPercent");
 const progressMeta = document.getElementById("progressMeta");
 const progressLabel = document.getElementById("progressLabel");
+const progressTime = document.getElementById("progressTime");
 
 let selectedFiles = [];
 let currentFilter = "all";
@@ -58,6 +59,8 @@ let lastResultsByCategory = createEmptyResults();
 let isUploading = false;
 let pseudoProgressTimer = null;
 let pseudoProgressValue = 0;
+let analysisStartedAtMs = 0;
+let analysisCompletedAtMs = 0;
 
 function createEmptyResults() {
   return {
@@ -193,6 +196,49 @@ function sleep(ms) {
   });
 }
 
+function formatElapsedDuration(ms) {
+  const safeMs = Math.max(0, Number(ms || 0));
+  const seconds = safeMs / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${String(remainingSeconds).padStart(2, "0")}s`;
+}
+
+function startAnalysisClock() {
+  analysisStartedAtMs = Date.now();
+  analysisCompletedAtMs = 0;
+  if (progressTime) {
+    progressTime.textContent = "Elapsed: 0.0s";
+  }
+}
+
+function updateElapsedTimeLabel() {
+  if (!progressTime || !analysisStartedAtMs || analysisCompletedAtMs) {
+    return;
+  }
+
+  progressTime.textContent = `Elapsed: ${formatElapsedDuration(Date.now() - analysisStartedAtMs)}`;
+}
+
+function finishAnalysisClock(success) {
+  if (!analysisStartedAtMs) {
+    return "0.0s";
+  }
+
+  analysisCompletedAtMs = Date.now();
+  const elapsed = formatElapsedDuration(analysisCompletedAtMs - analysisStartedAtMs);
+
+  if (progressTime) {
+    progressTime.textContent = success ? `Processed in ${elapsed}` : `Failed after ${elapsed}`;
+  }
+
+  return elapsed;
+}
+
 function hasAllowedImageType(file) {
   const mimeType = (file.type || "").toLowerCase();
   if (mimeType && ALLOWED_TYPES.has(mimeType)) {
@@ -229,6 +275,7 @@ function setProgress(percent, labelText, metaText) {
   progressPercent.textContent = `${safePercent}%`;
   progressLabel.textContent = labelText;
   progressMeta.textContent = metaText;
+  updateElapsedTimeLabel();
 }
 
 function resetProgress() {
@@ -236,11 +283,16 @@ function resetProgress() {
     return;
   }
 
+  analysisStartedAtMs = 0;
+  analysisCompletedAtMs = 0;
   progressWrap.classList.add("hidden");
   progressFill.style.width = "0%";
   progressPercent.textContent = "0%";
   progressLabel.textContent = "Analysis progress";
   progressMeta.textContent = "Waiting to start...";
+  if (progressTime) {
+    progressTime.textContent = "Elapsed: 0.0s";
+  }
 }
 
 function startPseudoProgress() {
@@ -471,15 +523,18 @@ function addFilesToQueue(fileList) {
   }
 }
 
-function clearQueue() {
+function clearQueue(options = {}) {
+  const { resetProgressUI = true, preserveStatus = false } = options;
   if (isUploading) {
     return;
   }
   selectedFiles = [];
   imageInput.value = "";
   renderQueue();
-  updateQueueMetrics();
-  resetProgress();
+  updateQueueMetrics(preserveStatus);
+  if (resetProgressUI) {
+    resetProgress();
+  }
 }
 
 function buildFormData(files) {
@@ -773,6 +828,26 @@ async function runSyncUploadFlow(files) {
   };
 }
 
+function applySuccessfulResults(endpoint, results) {
+  lastResultsByCategory = results;
+  updateSummaryChips(lastResultsByCategory);
+  renderResultCards();
+
+  const elapsed = finishAnalysisClock(true);
+  if (progressMeta) {
+    const currentMeta = (progressMeta.textContent || "Analysis complete.").trim();
+    progressMeta.textContent = currentMeta.includes("Processed in")
+      ? currentMeta
+      : `${currentMeta} Processed in ${elapsed}.`;
+  }
+
+  selectedFiles = [];
+  imageInput.value = "";
+  renderQueue();
+  updateQueueMetrics(true);
+  setStatus(`Completed via ${endpoint} in ${elapsed}.`);
+}
+
 async function uploadImages() {
   if (!selectedFiles.length || isUploading) {
     return;
@@ -780,25 +855,21 @@ async function uploadImages() {
 
   clearError();
   setUploadingState(true);
+  startAnalysisClock();
+  setProgress(2, "Queueing", "Preparing files for analysis...");
   let successful = false;
 
   try {
     const asyncFlow = await runAsyncUploadFlow(selectedFiles);
     if (asyncFlow.ok) {
-      lastResultsByCategory = asyncFlow.results;
-      updateSummaryChips(lastResultsByCategory);
-      renderResultCards();
-      setStatus(`Completed via ${asyncFlow.endpoint}`);
+      applySuccessfulResults(asyncFlow.endpoint, asyncFlow.results);
       successful = true;
       return;
     }
 
     const syncFlow = await runSyncUploadFlow(selectedFiles);
     if (syncFlow.ok) {
-      lastResultsByCategory = syncFlow.results;
-      updateSummaryChips(lastResultsByCategory);
-      renderResultCards();
-      setStatus(`Completed via ${syncFlow.endpoint}`);
+      applySuccessfulResults(syncFlow.endpoint, syncFlow.results);
       successful = true;
       return;
     }
@@ -810,6 +881,7 @@ async function uploadImages() {
     const message = error instanceof Error ? error.message : "Unexpected upload failure.";
     showError(message);
     setProgress(0, "Analysis failed", message);
+    finishAnalysisClock(false);
     setStatus("Upload failed. Fix the issue and try again.");
   } finally {
     setUploadingState(false);

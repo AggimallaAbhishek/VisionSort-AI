@@ -417,6 +417,12 @@ body {
   font-family: "Manrope", sans-serif;
 }
 
+.analysis-progress .progress-time {
+  margin-top: 4px;
+  color: #7e93c1;
+  font-size: 0.76rem;
+}
+
 .queue-item {
   display: grid;
   grid-template-columns: 1fr auto;
