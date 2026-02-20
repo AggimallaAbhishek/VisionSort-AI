@@ -460,14 +460,66 @@ function flattenResults(results) {
   return items;
 }
 
-function mapBrightnessValue(level) {
-  if (level === "dark") {
-    return 18;
+function computeBlurQualityScore(item) {
+  const providedScore = Number(item.blur_quality_score);
+  if (Number.isFinite(providedScore)) {
+    return clamp(providedScore, 0, 100);
   }
-  if (level === "overexposed") {
-    return 92;
+
+  const rawBlur = Number(item.blur_score || 0);
+  return clamp((rawBlur / 300) * 100, 0, 100);
+}
+
+function computeBrightnessQualityScore(item) {
+  const providedScore = Number(item.brightness_score);
+  if (Number.isFinite(providedScore)) {
+    return clamp(providedScore, 0, 100);
   }
-  return 55;
+
+  const brightnessValue = Number(item.brightness_value);
+  if (Number.isFinite(brightnessValue)) {
+    if (brightnessValue < 50) {
+      return clamp((brightnessValue / 50) * 69, 0, 100);
+    }
+    if (brightnessValue > 200) {
+      return clamp(((255 - brightnessValue) / 55) * 69, 0, 100);
+    }
+    const center = 125;
+    const normalHalfSpan = 75;
+    const normalizedDistance = Math.abs(brightnessValue - center) / normalHalfSpan;
+    return clamp(70 + (1 - normalizedDistance) * 30, 0, 100);
+  }
+
+  const level = String(item.brightness_level || "normal").toLowerCase();
+  if (level === "dark" || level === "overexposed") {
+    return 35;
+  }
+  return 82;
+}
+
+function shortenPath(path, maxLength = 62) {
+  const value = String(path || "");
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 3)}...`;
+}
+
+function resolveStorageFolder(item) {
+  if (item.storage_folder) {
+    return String(item.storage_folder);
+  }
+
+  const path = String(item.storage_path || "");
+  if (path.startsWith("s3://")) {
+    const withoutScheme = path.replace(/^s3:\/\/[^/]+\//, "");
+    const segments = withoutScheme.split("/");
+    if (segments.length >= 2) {
+      return `${segments[0]}/${segments[1]}`;
+    }
+    return withoutScheme;
+  }
+  return "n/a";
 }
 
 function renderResultCards() {
@@ -485,14 +537,21 @@ function renderResultCards() {
   }
 
   filtered.forEach((item) => {
-    const blurPercent = clamp((Number(item.blur_score || 0) / 2000) * 100, 2, 100);
-    const brightnessPercent = mapBrightnessValue(item.brightness_level);
-    const safeName = escapeHtml(item.file_name);
+    const blurPercent = computeBlurQualityScore(item);
+    const brightnessPercent = computeBrightnessQualityScore(item);
+    const renamedName = item.renamed_file_name || item.file_name || "processed_image.jpg";
+    const originalName = item.original_file_name || item.file_name || "unknown";
+    const safeName = escapeHtml(renamedName);
+    const safeOriginal = escapeHtml(originalName);
     const safeCategory = escapeHtml(item.__category);
     const safeLabel = escapeHtml(item.ai_label || "model_unavailable");
     const safeBrightness = escapeHtml(item.brightness_level || "normal");
-    const safeStorage = escapeHtml(item.storage_path || "n/a");
-    const safeProcessedStorage = escapeHtml(item.processed_storage_path || "n/a");
+    const safeStorage = escapeHtml(shortenPath(item.storage_path || "n/a"));
+    const safeProcessedStorage = escapeHtml(shortenPath(item.processed_storage_path || "n/a"));
+    const safeFolder = escapeHtml(resolveStorageFolder(item));
+    const blurRaw = Number(item.blur_score || 0);
+    const brightnessRaw = Number(item.brightness_value);
+    const brightnessRawLabel = Number.isFinite(brightnessRaw) ? `${brightnessRaw.toFixed(1)}/255` : "n/a";
 
     const card = document.createElement("article");
     card.className = "result-card";
@@ -503,19 +562,23 @@ function renderResultCards() {
       </div>
       <div class="card-body">
         <h3 class="card-title">${safeName}</h3>
-        <p class="card-subtitle">${safeLabel}</p>
+        <p class="card-subtitle">Original: ${safeOriginal}</p>
+        <span class="folder-pill">Folder: ${safeFolder}</span>
 
         <div class="metric-line">
-          <div class="label-row"><span>Blur Score</span><strong>${Number(item.blur_score || 0).toFixed(2)}</strong></div>
+          <div class="label-row"><span>Blur Quality</span><strong>${blurPercent.toFixed(1)}%</strong></div>
           <div class="progress blur"><span style="width:${blurPercent}%"></span></div>
+          <p class="metric-caption">Laplacian variance: ${blurRaw.toFixed(2)}</p>
         </div>
 
         <div class="metric-line">
-          <div class="label-row"><span>Brightness</span><strong>${safeBrightness}</strong></div>
+          <div class="label-row"><span>Brightness Quality</span><strong>${brightnessPercent.toFixed(1)}%</strong></div>
           <div class="progress brightness"><span style="width:${brightnessPercent}%"></span></div>
+          <p class="metric-caption">HSV mean: ${brightnessRawLabel} (${safeBrightness})</p>
         </div>
 
-        <p class="footer-meta">Original: ${safeStorage}<br />Processed: ${safeProcessedStorage}</p>
+        <p class="card-subtitle">AI label: ${safeLabel}</p>
+        <p class="footer-meta">Original object: ${safeStorage}<br />Processed object: ${safeProcessedStorage}</p>
       </div>
     `;
 

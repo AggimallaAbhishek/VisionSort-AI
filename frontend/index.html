@@ -30,26 +30,22 @@
           </span>
           <div>
             <p class="brand-title">VisionSort <span>AI</span></p>
+            <p class="brand-caption">Image quality control</p>
           </div>
         </div>
-
-        <nav class="top-nav" aria-label="Primary">
-          <a href="#" class="active">Upload</a>
-          <a href="#">Dashboard</a>
-          <a href="#">History</a>
-          <a href="#">Settings</a>
-        </nav>
-
-        <button class="ghost-btn" type="button">Run Analysis</button>
+        <div class="top-meta" aria-label="Service badges">
+          <span class="meta-pill">Production</span>
+          <span class="meta-pill muted">FastAPI + AWS</span>
+        </div>
       </header>
 
       <main class="workspace">
         <section class="hero reveal">
           <p class="eyebrow">Image Quality Pipeline</p>
-          <h1>Image Categorization Upload</h1>
+          <h1>Upload, score, and auto-sort images</h1>
           <p>
-            Drag and drop product shots or raw images. VisionSort AI analyzes blur, brightness,
-            and duplicates, then returns structured quality categories in seconds.
+            VisionSort AI detects blur, exposure, and duplicates, then stores results in organized
+            category folders with consistent file names.
           </p>
         </section>
 
@@ -135,6 +131,11 @@
           </button>
         </section>
 
+        <section class="results-head reveal">
+          <h2>Analysis Results</h2>
+          <p>Each processed image includes quality scores, storage paths, and auto-categorization.</p>
+        </section>
+
         <p id="errorBanner" class="error-banner hidden" role="alert"></p>
 
         <section class="result-grid reveal-stagger" id="resultGrid" aria-live="polite">
@@ -143,6 +144,6 @@
       </main>
     </div>
 
-    <script src="./script.js?v=20260220i"></script>
+    <script src="./script.js?v=20260221a"></script>
   </body>
 </html>

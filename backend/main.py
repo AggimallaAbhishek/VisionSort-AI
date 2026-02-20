@@ -44,6 +44,9 @@ MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_FILES = int(os.getenv("MAX_FILES", "50"))
 ENABLE_AI_LABEL = os.getenv("ENABLE_AI_LABEL", "true").lower() == "true"
 DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "anonymous")
+RENAMED_FILE_PREFIX = (
+    re.sub(r"[^a-zA-Z0-9_-]", "_", os.getenv("RENAMED_FILE_PREFIX", "vin_img").strip()) or "vin_img"
+)
 PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
@@ -70,6 +73,16 @@ EXTENSION_TO_CONTENT_TYPE = {
     ".tif": "image/tiff",
     ".tiff": "image/tiff",
     ".gif": "image/gif",
+}
+CONTENT_TYPE_TO_EXTENSION = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/pjpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "image/gif": ".gif",
 }
 
 app = FastAPI(title="VisionSort AI", version="1.1.0")
@@ -256,6 +269,7 @@ def root() -> Dict[str, Any]:
             "max_file_size_mb": MAX_FILE_SIZE_MB,
             "max_files": MAX_FILES,
             "max_image_width": MAX_IMAGE_WIDTH,
+            "renamed_file_prefix": RENAMED_FILE_PREFIX,
             "rate_limit_max_requests": RATE_LIMIT_MAX_REQUESTS,
             "rate_limit_window_seconds": RATE_LIMIT_WINDOW_SECONDS,
         },
@@ -406,23 +420,73 @@ def choose_final_status(blur_score: float, brightness_level: str, duplicate: boo
     return "good"
 
 
+def clamp_percent(value: float) -> float:
+    """Clamp quality scores to 0-100 range."""
+    return max(0.0, min(100.0, float(value)))
+
+
+def resolve_extension(content_type: str, file_name: str) -> str:
+    """Resolve extension from filename, then fallback to MIME type."""
+    ext = Path(file_name).suffix.lower()
+    if ext in EXTENSION_TO_CONTENT_TYPE:
+        return ext
+    return CONTENT_TYPE_TO_EXTENSION.get(content_type.lower(), ".jpg")
+
+
+def calculate_brightness_value(image: np.ndarray) -> float:
+    """Return average brightness value on HSV V channel (0-255)."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    return float(hsv[:, :, 2].mean())
+
+
+def calculate_blur_quality_score(blur_score: float) -> float:
+    """Map blur variance to a 0-100 quality score."""
+    scale = max(BLUR_THRESHOLD * 3.0, 1.0)
+    return round(clamp_percent((blur_score / scale) * 100.0), 2)
+
+
+def calculate_brightness_quality_score(brightness_value: float) -> float:
+    """Map brightness value to a 0-100 quality score around a normal range."""
+    if brightness_value < 50:
+        return round(clamp_percent((brightness_value / 50.0) * 69.0), 2)
+
+    if brightness_value > 200:
+        return round(clamp_percent(((255.0 - brightness_value) / 55.0) * 69.0), 2)
+
+    center = 125.0
+    normal_half_span = 75.0
+    normalized_distance = abs(brightness_value - center) / normal_half_span
+    return round(clamp_percent(70.0 + (1.0 - normalized_distance) * 30.0), 2)
+
+
 def build_item_payload(
-    file_name: str,
+    original_file_name: str,
+    renamed_file_name: str,
     blur_score: float,
+    blur_quality_score: float,
     brightness_level: str,
+    brightness_value: float,
+    brightness_score: float,
     ai_label: str,
     final_status: str,
     preview_data_url: str,
     storage_path: str | None,
     processed_storage_path: str | None,
-    ) -> Dict[str, Any]:
+    storage_folder: str,
+) -> Dict[str, Any]:
     """Build response payload item for frontend rendering."""
     return {
-        "file_name": file_name,
+        "file_name": renamed_file_name,
+        "original_file_name": original_file_name,
+        "renamed_file_name": renamed_file_name,
         "blur_score": round(blur_score, 2),
+        "blur_quality_score": round(blur_quality_score, 2),
         "brightness_level": brightness_level,
+        "brightness_value": round(brightness_value, 2),
+        "brightness_score": round(brightness_score, 2),
         "ai_label": ai_label,
         "final_status": final_status,
+        "storage_folder": storage_folder,
         "preview_data_url": preview_data_url,
         "storage_path": storage_path,
         "processed_storage_path": processed_storage_path,
@@ -488,16 +552,20 @@ def build_results_template() -> Dict[str, List[Dict[str, Any]]]:
 
 
 def persist_artifacts(
-    file_name: str,
+    renamed_file_name: str,
+    final_status: str,
+    request_batch_id: str,
+    object_date_prefix: str,
     content_type: str,
     raw_bytes: bytes,
     preview_bytes: bytes,
 ) -> Tuple[str | None, str | None]:
-    """Upload original and processed artifacts to S3."""
-    object_prefix = datetime.now(timezone.utc).strftime("%Y/%m/%d")
-    object_token = uuid.uuid4().hex
-    original_object_path = f"{object_prefix}/{object_token}_{file_name}"
-    processed_object_path = f"{object_prefix}/{object_token}_processed.jpg"
+    """Upload original and processed artifacts to S3 inside categorized folders."""
+    status_prefix = final_status.lower()
+    object_folder = f"{status_prefix}/{object_date_prefix}/{request_batch_id}"
+    processed_name = f"{Path(renamed_file_name).stem}_processed.jpg"
+    original_object_path = f"{object_folder}/{renamed_file_name}"
+    processed_object_path = f"{object_folder}/{processed_name}"
 
     uploads_storage_path = None
     processed_storage_path = None
@@ -510,7 +578,7 @@ def persist_artifacts(
             bucket="uploads",
         )
     except Exception as exc:
-        logger.exception("S3 original upload failed for %s: %s", file_name, exc)
+        logger.exception("S3 original upload failed for %s: %s", renamed_file_name, exc)
 
     try:
         processed_storage_path = aws_service.upload_image(
@@ -520,7 +588,7 @@ def persist_artifacts(
             bucket="processed",
         )
     except Exception as exc:
-        logger.exception("S3 processed upload failed for %s: %s", file_name, exc)
+        logger.exception("S3 processed upload failed for %s: %s", renamed_file_name, exc)
 
     return uploads_storage_path, processed_storage_path
 
@@ -593,9 +661,11 @@ def process_upload_payloads(
     persistence_tasks: List[Tuple[Future[Tuple[str | None, str | None]], Dict[str, Any], str]] = []
     processed_count = 0
     total_files = len(payloads)
+    request_batch_id = f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    object_date_prefix = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
     for index, payload in enumerate(payloads, start=1):
-        file_name = payload["file_name"]
+        original_file_name = payload["file_name"]
         try:
             validation_error = payload.get("validation_error")
             if validation_error:
@@ -609,48 +679,65 @@ def process_upload_payloads(
             pil_image = bgr_to_pil(resized_image)
 
             blur_score = detect_blur(resized_image)
+            blur_quality_score = calculate_blur_quality_score(blur_score)
+            brightness_value = calculate_brightness_value(resized_image)
+            brightness_score = calculate_brightness_quality_score(brightness_value)
             brightness_level = analyze_brightness(resized_image)
             duplicate = is_duplicate(pil_image, seen_hashes, threshold=DUPLICATE_HASH_DISTANCE)
             ai_label = predict_quality_label(pil_image)
             final_status = choose_final_status(blur_score, brightness_level, duplicate)
+            processed_count += 1
+
+            renamed_extension = resolve_extension(content_type, original_file_name)
+            renamed_file_name = f"{RENAMED_FILE_PREFIX}{processed_count}{renamed_extension}"
+            storage_folder = f"{final_status}/{object_date_prefix}/{request_batch_id}"
 
             preview_bytes = encode_preview_jpeg(resized_image)
             preview_data_url = f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('utf-8')}"
             item = build_item_payload(
-                file_name=file_name,
+                original_file_name=original_file_name,
+                renamed_file_name=renamed_file_name,
                 blur_score=blur_score,
+                blur_quality_score=blur_quality_score,
                 brightness_level=brightness_level,
+                brightness_value=brightness_value,
+                brightness_score=brightness_score,
                 ai_label=ai_label,
                 final_status=final_status,
+                storage_folder=storage_folder,
                 preview_data_url=preview_data_url,
                 storage_path=None,
                 processed_storage_path=None,
             )
             results[final_status].append(item)
-            metadata_rows.append(build_metadata_row(file_name, blur_score, brightness_level, ai_label, final_status))
+            metadata_rows.append(
+                build_metadata_row(renamed_file_name, blur_score, brightness_level, ai_label, final_status)
+            )
 
             persistence_tasks.append(
                 (
                     persist_executor.submit(
                         persist_artifacts,
-                        file_name=file_name,
+                        renamed_file_name=renamed_file_name,
+                        final_status=final_status,
+                        request_batch_id=request_batch_id,
+                        object_date_prefix=object_date_prefix,
                         content_type=content_type,
                         raw_bytes=raw_bytes,
                         preview_bytes=preview_bytes,
                     ),
                     item,
-                    file_name,
+                    renamed_file_name,
                 )
             )
-            processed_count += 1
 
         except ValueError as exc:
-            logger.warning("Skipping invalid image %s: %s", file_name, exc)
+            logger.warning("Skipping invalid image %s: %s", original_file_name, exc)
         except Exception as exc:
-            logger.exception("Unexpected processing error for %s: %s", file_name, exc)
+            logger.exception("Unexpected processing error for %s: %s", original_file_name, exc)
         finally:
             if progress_hook:
-                progress_hook(index, total_files, file_name, "processing")
+                progress_hook(index, total_files, original_file_name, "processing")
 
     if progress_hook and total_files:
         progress_hook(total_files, total_files, "", "finalizing")

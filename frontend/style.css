@@ -74,7 +74,7 @@ body {
 
 .topbar {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 22px;
   padding: 14px 18px;
@@ -126,6 +126,38 @@ body {
   color: #4d80ff;
 }
 
+.brand-caption {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: #8ea4d8;
+}
+
+.top-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.meta-pill {
+  border-radius: 999px;
+  border: 1px solid rgba(84, 122, 228, 0.5);
+  background: rgba(26, 43, 88, 0.88);
+  color: #d6e4ff;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+}
+
+.meta-pill.muted {
+  color: #adbfeb;
+  border-color: rgba(74, 104, 178, 0.42);
+}
+
 .top-nav {
   display: inline-flex;
   justify-self: center;
@@ -158,7 +190,7 @@ body {
 .hero {
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-xl);
-  padding: 40px 42px 28px;
+  padding: 36px 36px 26px;
   background: linear-gradient(135deg, rgba(14, 23, 52, 0.96), rgba(8, 14, 34, 0.96));
 }
 
@@ -179,10 +211,10 @@ body {
 
 .hero p {
   margin: 14px 0 0;
-  max-width: 64ch;
+  max-width: 60ch;
   color: var(--text-soft);
   font-size: 1.03rem;
-  line-height: 1.62;
+  line-height: 1.58;
 }
 
 .stats {
@@ -237,7 +269,7 @@ body {
 .upload-wrap {
   border-radius: var(--radius-xl);
   border: 1px solid var(--line-soft);
-  background: linear-gradient(175deg, rgba(12, 20, 46, 0.98), rgba(8, 13, 32, 0.97));
+  background: linear-gradient(175deg, rgba(11, 18, 43, 0.98), rgba(8, 13, 32, 0.97));
   padding: 22px;
   box-shadow: var(--shadow);
 }
@@ -539,6 +571,26 @@ body {
   gap: 10px;
 }
 
+.results-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.results-head h2 {
+  margin: 0;
+  font-size: clamp(1.3rem, 2vw, 1.7rem);
+  letter-spacing: -0.02em;
+}
+
+.results-head p {
+  margin: 0;
+  color: #9ab1df;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.94rem;
+}
+
 .chip {
   border: 1px solid rgba(73, 101, 171, 0.62);
   background: rgba(18, 30, 65, 0.85);
@@ -621,7 +673,7 @@ body {
   background: linear-gradient(180deg, rgba(17, 29, 63, 0.98), rgba(12, 21, 48, 0.98));
   box-shadow: 0 18px 28px rgba(3, 9, 26, 0.36);
   display: grid;
-  min-height: 360px;
+  min-height: 390px;
 }
 
 .card-image-wrap {
@@ -691,11 +743,12 @@ body {
   margin: 0;
   color: #9eb1db;
   font-size: 0.84rem;
+  line-height: 1.35;
 }
 
 .metric-line {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .metric-line .label-row {
@@ -708,7 +761,7 @@ body {
 
 .progress {
   border-radius: 999px;
-  height: 5px;
+  height: 7px;
   background: rgba(71, 97, 155, 0.4);
   overflow: hidden;
 }
@@ -719,11 +772,33 @@ body {
 }
 
 .progress.blur > span {
-  background: linear-gradient(90deg, #18d89c, #2f5dff);
+  background: linear-gradient(90deg, #27d9a1, #26b9ff);
 }
 
 .progress.brightness > span {
-  background: linear-gradient(90deg, #f8b61d, #ffde79);
+  background: linear-gradient(90deg, #ffae2e, #ffe66b);
+}
+
+.metric-caption {
+  margin: 0;
+  font-size: 0.75rem;
+  color: #8ea3d3;
+  font-family: "Manrope", sans-serif;
+}
+
+.folder-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #bfd1f7;
+  background: rgba(24, 37, 73, 0.78);
+  border: 1px solid rgba(82, 112, 187, 0.5);
 }
 
 .footer-meta {
@@ -731,6 +806,7 @@ body {
   font-size: 0.74rem;
   color: #8ca2d3;
   line-height: 1.45;
+  word-break: break-word;
 }
 
 .reveal,
@@ -786,6 +862,10 @@ body {
     justify-items: start;
   }
 
+  .top-meta {
+    flex-wrap: wrap;
+  }
+
   .top-nav {
     justify-self: start;
   }
@@ -821,6 +901,11 @@ body {
   .panel-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .results-head {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .action-buttons {
