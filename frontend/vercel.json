@@ -3,6 +3,10 @@
   "trailingSlash": false,
   "rewrites": [
     {
+      "source": "/api",
+      "destination": "https://visionsort-ai.onrender.com/"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "https://visionsort-ai.onrender.com/$1"
     }

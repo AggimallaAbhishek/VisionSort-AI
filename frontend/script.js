@@ -10,13 +10,14 @@ if (apiOverrideFromQuery) {
 
 const storedApiBase = localStorage.getItem("visionsort_api_base_url")?.trim() || "";
 const configuredApiBase = (
-  apiOverrideFromQuery || window.VISIONSORT_API_BASE_URL || storedApiBase || metaApiBase || ""
+  apiOverrideFromQuery || window.VISIONSORT_API_BASE_URL || metaApiBase || storedApiBase || ""
 ).trim();
 
 const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai.onrender.com";
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 const ALLOWED_TYPES = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 const CATEGORIES = ["good", "blurry", "dark", "overexposed", "duplicates"];
 
 const dropZone = document.getElementById("dropZone");
@@ -107,6 +108,67 @@ function buildApiCandidates() {
 
 const API_BASE_CANDIDATES = buildApiCandidates();
 
+function dedupeUrls(urls) {
+  const seen = new Set();
+  const unique = [];
+
+  urls.forEach((url) => {
+    const normalized = normalizeApiBase(url || "");
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    unique.push(normalized);
+  });
+
+  return unique;
+}
+
+function buildUploadEndpointCandidates(apiBases) {
+  const endpoints = [];
+
+  apiBases.forEach((base) => {
+    const normalizedBase = normalizeApiBase(base);
+
+    if (normalizedBase === "/api") {
+      endpoints.push("/api/upload");
+      return;
+    }
+
+    if (normalizedBase.endsWith("/api")) {
+      endpoints.push(`${normalizedBase}/upload`);
+      const baseWithoutApi = normalizedBase.slice(0, -4);
+      if (baseWithoutApi) {
+        endpoints.push(`${baseWithoutApi}/upload`);
+      }
+      return;
+    }
+
+    endpoints.push(`${normalizedBase}/upload`);
+    endpoints.push(`${normalizedBase}/api/upload`);
+  });
+
+  return dedupeUrls(endpoints);
+}
+
+function prioritizeStoredEndpoint(endpoints) {
+  const storedEndpoint = localStorage.getItem("visionsort_api_upload_endpoint")?.trim() || "";
+  if (!storedEndpoint) {
+    return endpoints;
+  }
+
+  const normalizedStored = normalizeApiBase(storedEndpoint);
+  if (!endpoints.includes(normalizedStored)) {
+    return endpoints;
+  }
+
+  return [normalizedStored, ...endpoints.filter((endpoint) => endpoint !== normalizedStored)];
+}
+
+const API_UPLOAD_ENDPOINT_CANDIDATES = prioritizeStoredEndpoint(
+  buildUploadEndpointCandidates(API_BASE_CANDIDATES)
+);
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -125,6 +187,17 @@ function bytesToSize(bytes) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function hasAllowedImageType(file) {
+  const mimeType = (file.type || "").toLowerCase();
+  if (mimeType && ALLOWED_TYPES.has(mimeType)) {
+    return true;
+  }
+
+  const fileName = (file.name || "").toLowerCase();
+  const extension = fileName.includes(".") ? fileName.split(".").pop() : "";
+  return ALLOWED_EXTENSIONS.has(extension || "");
 }
 
 function showError(message) {
@@ -163,7 +236,8 @@ function updateQueueMetrics() {
   metricSelected.textContent = String(count);
 
   if (!isUploading) {
-    setStatus(count ? "Queue ready. Click Analyze Images." : "Ready for analysis.");
+    const apiHint = API_UPLOAD_ENDPOINT_CANDIDATES[0] || "not configured";
+    setStatus(count ? "Queue ready. Click Analyze Images." : `Ready for analysis. API: ${apiHint}`);
   }
 
   analyzeBtn.disabled = isUploading || count === 0;
@@ -319,7 +393,7 @@ function addFilesToQueue(fileList) {
       return;
     }
 
-    if (!ALLOWED_TYPES.has((file.type || "").toLowerCase())) {
+    if (!hasAllowedImageType(file)) {
       issues.push(`Skipped ${file.name}: unsupported type.`);
       return;
     }
@@ -380,9 +454,7 @@ async function getResponseErrorMessage(response) {
   return `Upload failed (${response.status}): ${snippet}`;
 }
 
-async function attemptUpload(apiBase, files) {
-  const endpoint = `${apiBase}/upload`;
-
+async function attemptUpload(endpoint, files) {
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -424,9 +496,11 @@ async function uploadImages() {
   try {
     const failures = [];
 
-    for (const apiBase of API_BASE_CANDIDATES) {
-      const result = await attemptUpload(apiBase, selectedFiles);
+    for (const endpoint of API_UPLOAD_ENDPOINT_CANDIDATES) {
+      const result = await attemptUpload(endpoint, selectedFiles);
       if (result.ok) {
+        localStorage.setItem("visionsort_api_upload_endpoint", result.endpoint);
+
         lastResultsByCategory = {
           good: Array.isArray(result.data.good) ? result.data.good : [],
           blurry: Array.isArray(result.data.blurry) ? result.data.blurry : [],
@@ -451,7 +525,7 @@ async function uploadImages() {
     const summary = failures.length
       ? failures[failures.length - 1]
       : "No upload endpoint was reachable.";
-    throw new Error(`${summary} (Tried: ${API_BASE_CANDIDATES.join(", ")})`);
+    throw new Error(`${summary} (Tried: ${API_UPLOAD_ENDPOINT_CANDIDATES.join(", ")})`);
   } catch (error) {
     showError(error instanceof Error ? error.message : "Unexpected upload failure.");
     setStatus("Upload failed. Fix the issue and try again.");
