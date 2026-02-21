@@ -35,6 +35,10 @@ services:
         value: "5"
       - key: MAX_IMAGE_WIDTH
         value: "1024"
+      - key: PREVIEW_MAX_WIDTH
+        value: "640"
+      - key: PREVIEW_JPEG_QUALITY
+        value: "70"
       - key: MAX_FILE_SIZE_MB
         value: "100"
       - key: MAX_FILES

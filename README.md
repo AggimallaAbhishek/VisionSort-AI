@@ -236,6 +236,10 @@ Optional AI + rule fusion knobs:
 - Ensure `ALLOWED_ORIGINS` includes local and deployed frontend domains.
 - Backend validates max file count, file size, and allowed image types.
 - Images are resized using `MAX_IMAGE_WIDTH` before analysis.
+- Response previews are compressed using `PREVIEW_MAX_WIDTH` and `PREVIEW_JPEG_QUALITY` to keep large batches stable.
 - If model weights are missing/untrained, `ai_label` is `model_unavailable`.
 - For large uploads, prefer async endpoint `POST /upload/async` and poll `GET /jobs/{job_id}`.
 - Use `GET /` to confirm timeout config values after Render deploy.
+- Frontend batch controls (in `frontend/index.html` meta tags):
+  - `visionsort-max-request-size-mb` (default `35`)
+  - `visionsort-max-batch-files` (default `10`)

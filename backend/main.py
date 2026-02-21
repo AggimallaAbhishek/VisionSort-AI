@@ -39,6 +39,8 @@ logger = logging.getLogger(__name__)
 BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "100"))
 DUPLICATE_HASH_DISTANCE = int(os.getenv("DUPLICATE_HASH_DISTANCE", "5"))
 MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "1024"))
+PREVIEW_MAX_WIDTH = int(os.getenv("PREVIEW_MAX_WIDTH", "640"))
+PREVIEW_JPEG_QUALITY = max(30, min(95, int(os.getenv("PREVIEW_JPEG_QUALITY", "70"))))
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_FILES = int(os.getenv("MAX_FILES", "50"))
@@ -279,6 +281,8 @@ def root() -> Dict[str, Any]:
             "max_file_size_mb": MAX_FILE_SIZE_MB,
             "max_files": MAX_FILES,
             "max_image_width": MAX_IMAGE_WIDTH,
+            "preview_max_width": PREVIEW_MAX_WIDTH,
+            "preview_jpeg_quality": PREVIEW_JPEG_QUALITY,
             "renamed_file_prefix": RENAMED_FILE_PREFIX,
             "rate_limit_max_requests": RATE_LIMIT_MAX_REQUESTS,
             "rate_limit_window_seconds": RATE_LIMIT_WINDOW_SECONDS,
@@ -743,6 +747,7 @@ def process_upload_payloads(
             image = decode_image(raw_bytes)
             resized_image = resize_image(image, MAX_IMAGE_WIDTH)
             pil_image = bgr_to_pil(resized_image)
+            preview_image = resize_image(resized_image, PREVIEW_MAX_WIDTH)
 
             blur_score = detect_blur(resized_image)
             blur_quality_score = calculate_blur_quality_score(blur_score)
@@ -765,7 +770,7 @@ def process_upload_payloads(
             renamed_file_name = f"{RENAMED_FILE_PREFIX}{processed_count}{renamed_extension}"
             storage_folder = f"{final_status}/{object_date_prefix}/{request_batch_id}"
 
-            preview_bytes = encode_preview_jpeg(resized_image)
+            preview_bytes = encode_preview_jpeg(preview_image, quality=PREVIEW_JPEG_QUALITY)
             preview_data_url = f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('utf-8')}"
             item = build_item_payload(
                 original_file_name=original_file_name,

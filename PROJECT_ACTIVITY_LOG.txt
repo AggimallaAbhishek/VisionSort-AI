@@ -219,3 +219,17 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - node --check /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js (passed)
   - Added batching controls: max request size 35MB and max 10 files per request (configurable via meta tags)
   Status: done
+
+- [2026-02-21 23:54:06 IST (+0530)] Actor: Codex
+  Action: Performed full project audit and fixed backend response bloat for large batches by compressing/downscaling preview images before embedding in JSON (`preview_data_url`), reducing request/response transfer load and timeout risk.
+  Scope: backend performance and reliability
+  Files/Services:
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/main.py
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/.env.example
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/render.yaml
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/README.md
+  Validation:
+  - Backend source compile check passed (excluding virtualenv cache writes)
+  - Frontend JS syntax check passed
+  - Added tunables: `PREVIEW_MAX_WIDTH=640`, `PREVIEW_JPEG_QUALITY=70`
+  Status: done
