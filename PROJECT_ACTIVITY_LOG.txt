@@ -1,0 +1,187 @@
+VisionSort AI - Project Activity Log
+===================================
+
+Log File: /Users/aggimallaabhishek/Documents/VisionSort-AI/PROJECT_ACTIVITY_LOG.txt
+Created: 2026-02-21 19:29:23 IST (+0530)
+Maintained by: Project owner + Codex assistant
+
+Timestamp and Source Notes
+--------------------------
+1. Git commit entries below are exact commit timestamps from repository history (ISO format, IST +0530).
+2. Runtime/terminal events are exact where terminal output included timestamp/date.
+3. If an action happened but exact time was not printed in terminal/git, it is marked as "time not captured".
+
+Future Logging Protocol (Going Forward)
+---------------------------------------
+For every new major action, add an entry with this format:
+- [YYYY-MM-DD HH:MM:SS TZ] Actor: <you/Codex>
+  Action: <what changed>
+  Scope: <backend/frontend/deploy/training/infra>
+  Files/Services: <paths or services>
+  Validation: <command/result>
+  Status: <done/in-progress/blocked>
+
+Current Status Snapshot (as of 2026-02-21 19:29:23 IST)
+--------------------------------------------------------
+- Frontend: Vercel deployment active at https://vision-sort-ai.vercel.app
+- Backend: Render deployment active at https://visionsort-ai.onrender.com
+- Storage/DB: AWS S3 + RDS connected
+- AI: MobileNetV2 training/inference integrated; AI-assisted status logic enabled
+- Limits: MAX_FILE_SIZE_MB=100, MAX_FILES=50
+- Performance tuning: persistence timeout and S3/DB timeout knobs added
+
+Historical Timeline (Exact Git Commit History)
+----------------------------------------------
+- [2026-02-19 17:06:09 +0530] 6b4c11b | AggimallaAbhishek
+  Action: Initial commit
+
+- [2026-02-19 17:07:10 +0530] e463eac | AggimallaAbhishek
+  Action: Revise README.md for VisionSort AI project
+
+- [2026-02-19 17:08:22 +0530] 81740a3 | AggimallaAbhishek
+  Action: Revise README for better structure and clarity
+
+- [2026-02-19 17:35:11 +0530] 28ad1c8 | Aggimalla Abhishek
+  Action: Created frontend and backend folders/files
+
+- [2026-02-19 19:58:42 +0530] 111880b | Aggimalla Abhishek
+  Action: Updated aws/main/requirements/README
+
+- [2026-02-19 20:44:19 +0530] 25d9798 | Aggimalla Abhishek
+  Action: Backend updates (aws/main/requirements), frontend script updates, test images added
+
+- [2026-02-19 22:07:50 +0530] 90028c2 | Aggimalla Abhishek
+  Action: Frontend index/script/vercel.json/README updates
+
+- [2026-02-19 22:19:29 +0530] cd19008 | Aggimalla Abhishek
+  Action: General code changes
+
+- [2026-02-19 22:25:56 +0530] 34906ba | Aggimalla Abhishek
+  Action: Fix Vercel frontend API routing via /api rewrite
+
+- [2026-02-19 22:28:20 +0530] 0ebfefc | Aggimalla Abhishek
+  Action: Fix frontend response body double-read error handling
+
+- [2026-02-19 23:02:15 +0530] 3f5b06e | Aggimalla Abhishek
+  Action: Fix API routing fallback and retry for Vercel/Render
+
+- [2026-02-19 23:05:43 +0530] 120d33a | Aggimalla Abhishek
+  Action: Remove /api 404 dependency, improve frontend routing
+
+- [2026-02-19 23:21:05 +0530] 967706a | Aggimalla Abhishek
+  Action: Add frontend API fallback and runtime API override
+
+- [2026-02-19 23:29:41 +0530] 7208788 | Aggimalla Abhishek
+  Action: Fix frontend-backend connectivity and production CORS
+
+- [2026-02-19 23:35:20 +0530] 5ce94ec | Aggimalla Abhishek
+  Action: Add /api route aliases for backend compatibility
+
+- [2026-02-20 00:19:30 +0530] f169c79 | Aggimalla Abhishek
+  Action: Point frontend and Vercel rewrite to correct Render backend URL
+
+- [2026-02-20 01:47:52 +0530] 8bdc23d | Aggimalla Abhishek
+  Action: Redesign frontend UI/UX (dark dashboard upload experience)
+
+- [2026-02-20 15:37:59 +0530] fd4057d | Aggimalla Abhishek
+  Action: Harden frontend API connectivity and Vercel proxy routing
+
+- [2026-02-20 16:06:40 +0530] 6a773a0 | Aggimalla Abhishek
+  Action: Speed up processing and add realtime analysis progress bar
+
+- [2026-02-20 17:09:15 +0530] c91e912 | Aggimalla Abhishek
+  Action: Fix async progress polling reliability and error visibility
+
+- [2026-02-20 17:09:37 +0530] 4a8b196 | Aggimalla Abhishek
+  Action: Additional code updates
+
+- [2026-02-20 17:22:25 +0530] eec16e1 | Aggimalla Abhishek
+  Action: Auto-clear queue after success and display analysis elapsed time
+
+- [2026-02-20 18:11:01 +0530] 484ec42 | Aggimalla Abhishek
+  Action: Improve upload reliability (async fallback, broader types, decode fallback)
+
+- [2026-02-20 19:28:34 +0530] 54180ea | Aggimalla Abhishek
+  Action: Increase upload limits and make frontend limits configurable
+
+- [2026-02-21 00:02:21 +0530] e628085 | Aggimalla Abhishek
+  Action: main.py and script.js updates
+
+- [2026-02-21 02:05:43 +0530] e72643f | Aggimalla Abhishek
+  Action: Backend logic + frontend UI/UX improvements
+
+- [2026-02-21 02:58:27 +0530] 8e01af4 | Aggimalla Abhishek
+  Action: MobileNetV2 integration updates in model prediction
+
+- [2026-02-21 03:12:26 +0530] 2328f6a | Aggimalla Abhishek
+  Action: train_mobilenetv2.py and README updates
+
+- [2026-02-21 14:05:05 +0530] 0cb8731 | Aggimalla Abhishek
+  Action: Began training workflow with dataset preparation
+
+- [2026-02-21 14:36:52 +0530] 422399a | Aggimalla Abhishek
+  Action: Added training photos for blurry/overexposed/dark classes
+
+- [2026-02-21 15:15:37 +0530] 27657ab | Aggimalla Abhishek
+  Action: Added images in train/val folders
+
+- [2026-02-21 15:34:46 +0530] baf5023 | Aggimalla Abhishek
+  Action: Removed train/val overlap to keep validation data unique
+
+- [2026-02-21 15:45:28 +0530] 0d8c2fe | Aggimalla Abhishek
+  Action: Training test run on available images
+
+- [2026-02-21 16:44:37 +0530] 69d7629 | Aggimalla Abhishek
+  Action: Improved training setup for higher model accuracy
+
+- [2026-02-21 17:26:18 +0530] 6519499 | Aggimalla Abhishek
+  Action: Retrained model with tuned parameters
+
+- [2026-02-21 17:43:53 +0530] 853ca79 | Aggimalla Abhishek
+  Action: Better error handling and optimization updates
+
+- [2026-02-21 17:45:35 +0530] d33fb02 | Aggimalla Abhishek
+  Action: Additional bug fixes
+
+- [2026-02-21 18:14:31 +0530] e1cc519 | Aggimalla Abhishek
+  Action: Backend + frontend optimization updates
+
+- [2026-02-21 19:24:19 +0530] cfb2c6d | Aggimalla Abhishek
+  Action: Reduced backend timeout delays in aws client/main flow
+
+Runtime and Deployment Events (Exact Where Captured)
+-----------------------------------------------------
+- [2026-02-19 18:05:49 GMT] Render URL checks returned 404 with x-render-routing=no-server:
+  - GET https://visionsort-ai-backend.onrender.com/
+  - GET https://visionsort-ai-backend.onrender.com/api
+
+- [2026-02-20 11:00:36.424746 +0000] Async upload job created (job_id=988ba79beb204a9cb686d5abca57b8b5)
+- [2026-02-20 11:00:56.712836 +0000] Same async job completed successfully
+  Duration: ~20.29 seconds for 1 file in that run
+
+- [time not captured in terminal output] S3 bucket permissions fixed:
+  - visionsort-uploads-vin HEAD OK / PUT OK
+  - visionsort-processed-vin HEAD OK / PUT OK
+
+- [time not captured in terminal output] Backend health confirmed with AWS and CORS config active
+
+- [time not captured in terminal output] AI label flow validated locally and in Render
+
+- [time not captured in terminal output] Performance probe showed fast root but very slow synchronous upload (~490s), leading to timeout hardening work
+
+This Session - Documentation Action
+-----------------------------------
+- [2026-02-21 19:29:23 IST (+0530)] Actor: Codex
+  Action: Created this project-wide log file and backfilled full timeline from Git + runtime evidence.
+  File: /Users/aggimallaabhishek/Documents/VisionSort-AI/PROJECT_ACTIVITY_LOG.txt
+  Status: Done
+
+Next Entry Placeholder (Use This Block for Future Updates)
+-----------------------------------------------------------
+- [YYYY-MM-DD HH:MM:SS TZ] Actor: <you/Codex>
+  Action:
+  Scope:
+  Files/Services:
+  Validation:
+  Status:
+
