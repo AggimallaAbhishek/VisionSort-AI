@@ -185,3 +185,15 @@ Next Entry Placeholder (Use This Block for Future Updates)
   Validation:
   Status:
 
+
+- [2026-02-21 20:21:18 IST (+0530)] Actor: Codex
+  Action: Frontend upgraded to folder-based result sections, per-category ZIP download, and all-folders ZIP export; fixed score/progress bar overflow with clamped widths and safer layout constraints.
+  Scope: frontend ui/ux + frontend-backend result consumption
+  Files/Services:
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/index.html
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/style.css
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js
+  Validation:
+  - node --check /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js (passed)
+  - git status confirmed modified frontend files only for this change set
+  Status: done

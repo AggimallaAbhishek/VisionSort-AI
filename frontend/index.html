@@ -68,6 +68,7 @@
           <article class="metric-card score">
             <p>Quality Score</p>
             <h2 id="metricScore">0%</h2>
+            <div class="metric-mini-progress" aria-hidden="true"><span id="metricScoreFill"></span></div>
             <span>Good ÷ analyzed</span>
           </article>
         </section>
@@ -133,7 +134,12 @@
 
         <section class="results-head reveal">
           <h2>Analysis Results</h2>
-          <p>Each processed image includes quality scores, storage paths, and auto-categorization.</p>
+          <div class="results-head-actions">
+            <p>Each processed image includes quality scores, storage paths, and auto-categorization.</p>
+            <button id="downloadAllZipBtn" class="ghost-btn" type="button" disabled>
+              Download All Folders (.zip)
+            </button>
+          </div>
         </section>
 
         <p id="errorBanner" class="error-banner hidden" role="alert"></p>
@@ -144,6 +150,7 @@
       </main>
     </div>
 
-    <script src="./script.js?v=20260221b"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="./script.js?v=20260221c"></script>
   </body>
 </html>

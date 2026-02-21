@@ -43,6 +43,13 @@ const ALLOWED_TYPES = new Set([
 ]);
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "jfif", "png", "webp", "gif", "bmp", "tif", "tiff"]);
 const CATEGORIES = ["good", "blurry", "dark", "overexposed", "duplicates"];
+const CATEGORY_LABELS = {
+  good: "Good",
+  blurry: "Blurry",
+  dark: "Dark",
+  overexposed: "Overexposed",
+  duplicates: "Duplicates",
+};
 const ASYNC_POLL_INTERVAL_MS = 700;
 const ASYNC_TIMEOUT_MS = 8 * 60 * 1000;
 const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 18 * 1000;
@@ -64,6 +71,8 @@ const metricSelected = document.getElementById("metricSelected");
 const metricGood = document.getElementById("metricGood");
 const metricIssues = document.getElementById("metricIssues");
 const metricScore = document.getElementById("metricScore");
+const metricScoreFill = document.getElementById("metricScoreFill");
+const downloadAllZipBtn = document.getElementById("downloadAllZipBtn");
 
 const chipAll = document.getElementById("chipAll");
 const chipGood = document.getElementById("chipGood");
@@ -88,6 +97,7 @@ let pseudoProgressTimer = null;
 let pseudoProgressValue = 0;
 let analysisStartedAtMs = 0;
 let analysisCompletedAtMs = 0;
+let isPreparingZip = false;
 
 function createEmptyResults() {
   return {
@@ -206,6 +216,31 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+function safeFileName(name, fallback) {
+  const cleaned = String(name || "")
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_")
+    .replace(/\s+/g, "_")
+    .trim();
+  return cleaned || fallback;
+}
+
+function dataUrlToBase64Payload(dataUrl) {
+  const raw = String(dataUrl || "");
+  const match = raw.match(/^data:[^;]+;base64,(.+)$/);
+  return match ? match[1] : "";
+}
+
+function makeZipTimestamp() {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
+}
+
 function bytesToSize(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return "0 MB";
@@ -215,6 +250,10 @@ function bytesToSize(bytes) {
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function hasAnyResults(results) {
+  return CATEGORIES.some((key) => Array.isArray(results[key]) && results[key].length > 0);
 }
 
 function sleep(ms) {
@@ -368,6 +407,8 @@ function setUploadingState(uploading) {
   } else {
     analyzeBtn.textContent = "Analyze Images";
   }
+
+  updateDownloadControls();
 }
 
 function updateQueueMetrics(preserveStatus = false) {
@@ -448,6 +489,9 @@ function updateSummaryChips(results) {
   metricGood.textContent = String(counts.good);
   metricIssues.textContent = String(issues);
   metricScore.textContent = `${score}%`;
+  if (metricScoreFill) {
+    metricScoreFill.style.width = `${clamp(score, 0, 100)}%`;
+  }
 }
 
 function flattenResults(results) {
@@ -522,72 +566,146 @@ function resolveStorageFolder(item) {
   return "n/a";
 }
 
+function getVisibleCategories() {
+  if (currentFilter === "all") {
+    return [...CATEGORIES];
+  }
+  return CATEGORIES.includes(currentFilter) ? [currentFilter] : [...CATEGORIES];
+}
+
+function buildResultCardElement(item, categoryKey) {
+  const blurPercent = clamp(computeBlurQualityScore(item), 0, 100);
+  const brightnessPercent = clamp(computeBrightnessQualityScore(item), 0, 100);
+  const renamedName = item.renamed_file_name || item.file_name || "processed_image.jpg";
+  const originalName = item.original_file_name || item.file_name || "unknown";
+  const safeName = escapeHtml(renamedName);
+  const safeOriginal = escapeHtml(originalName);
+  const safeCategory = escapeHtml(categoryKey);
+  const safeLabel = escapeHtml(item.ai_label || "model_unavailable");
+  const aiConfidenceRaw = Number(item.ai_confidence);
+  const aiConfidenceLabel = Number.isFinite(aiConfidenceRaw) ? `${aiConfidenceRaw.toFixed(1)}%` : "n/a";
+  const statusSource = escapeHtml(item.status_source || "rule");
+  const safeBrightness = escapeHtml(item.brightness_level || "normal");
+  const safeStorage = escapeHtml(shortenPath(item.storage_path || "n/a"));
+  const safeProcessedStorage = escapeHtml(shortenPath(item.processed_storage_path || "n/a"));
+  const safeFolder = escapeHtml(resolveStorageFolder(item));
+  const blurRaw = Number(item.blur_score || 0);
+  const brightnessRaw = Number(item.brightness_value);
+  const brightnessRawLabel = Number.isFinite(brightnessRaw) ? `${brightnessRaw.toFixed(1)}/255` : "n/a";
+  const imageSource = item.preview_data_url || "";
+
+  const card = document.createElement("article");
+  card.className = "result-card";
+  card.innerHTML = `
+    <div class="card-image-wrap">
+      <img src="${imageSource}" alt="${safeName}" loading="lazy" />
+      <span class="status-badge ${safeCategory}">${safeCategory}</span>
+    </div>
+    <div class="card-body">
+      <h3 class="card-title">${safeName}</h3>
+      <p class="card-subtitle">Original: ${safeOriginal}</p>
+      <span class="folder-pill">Folder: ${safeFolder}</span>
+
+      <div class="metric-line">
+        <div class="label-row"><span>Blur Quality</span><strong>${blurPercent.toFixed(1)}%</strong></div>
+        <div class="progress blur"><span style="width:${blurPercent.toFixed(2)}%"></span></div>
+        <p class="metric-caption">Laplacian variance: ${blurRaw.toFixed(2)}</p>
+      </div>
+
+      <div class="metric-line">
+        <div class="label-row"><span>Brightness Quality</span><strong>${brightnessPercent.toFixed(1)}%</strong></div>
+        <div class="progress brightness"><span style="width:${brightnessPercent.toFixed(2)}%"></span></div>
+        <p class="metric-caption">HSV mean: ${brightnessRawLabel} (${safeBrightness})</p>
+      </div>
+
+      <p class="card-subtitle">AI label: ${safeLabel} (${aiConfidenceLabel})</p>
+      <p class="metric-caption">Decision source: ${statusSource}</p>
+      <p class="footer-meta">Original object: ${safeStorage}<br />Processed object: ${safeProcessedStorage}</p>
+    </div>
+  `;
+
+  return card;
+}
+
+function createFolderSection(categoryKey, items) {
+  const section = document.createElement("section");
+  section.className = "folder-section";
+  section.dataset.category = categoryKey;
+  const categoryLabel = CATEGORY_LABELS[categoryKey] || categoryKey;
+
+  section.innerHTML = `
+    <div class="folder-head">
+      <div class="folder-title">
+        <h3>${escapeHtml(categoryLabel)} Folder</h3>
+        <span class="folder-count">${items.length} file${items.length === 1 ? "" : "s"}</span>
+      </div>
+      <button
+        class="ghost-btn folder-download-btn"
+        type="button"
+        data-download-category="${categoryKey}"
+        ${items.length ? "" : "disabled"}
+      >
+        Download ${escapeHtml(categoryLabel)}.zip
+      </button>
+    </div>
+    <div class="folder-body"></div>
+  `;
+
+  const body = section.querySelector(".folder-body");
+  if (!items.length) {
+    const empty = document.createElement("article");
+    empty.className = "folder-empty";
+    empty.textContent = "No images in this folder.";
+    body.appendChild(empty);
+  } else {
+    items.forEach((item) => {
+      body.appendChild(buildResultCardElement(item, categoryKey));
+    });
+  }
+
+  return section;
+}
+
+function updateDownloadControls() {
+  const hasResults = hasAnyResults(lastResultsByCategory);
+  if (downloadAllZipBtn) {
+    downloadAllZipBtn.disabled = !hasResults || isUploading || isPreparingZip;
+    downloadAllZipBtn.textContent = isPreparingZip
+      ? "Preparing ZIP..."
+      : "Download All Folders (.zip)";
+  }
+
+  document.querySelectorAll(".folder-download-btn").forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+
+    const category = button.dataset.downloadCategory || "";
+    const count = Array.isArray(lastResultsByCategory[category]) ? lastResultsByCategory[category].length : 0;
+    button.disabled = !count || isUploading || isPreparingZip;
+  });
+}
+
 function renderResultCards() {
-  const allItems = flattenResults(lastResultsByCategory);
-  const filtered = currentFilter === "all" ? allItems : allItems.filter((item) => item.__category === currentFilter);
-
   resultGrid.innerHTML = "";
+  const categoriesToRender = getVisibleCategories();
+  const total = flattenResults(lastResultsByCategory).length;
 
-  if (!filtered.length) {
+  if (!total) {
     const empty = document.createElement("article");
     empty.className = "result-empty";
-    empty.textContent = "No processed images for this category yet.";
+    empty.textContent = "No processed images yet. Upload files to start analysis.";
     resultGrid.appendChild(empty);
+    updateDownloadControls();
     return;
   }
 
-  filtered.forEach((item) => {
-    const blurPercent = computeBlurQualityScore(item);
-    const brightnessPercent = computeBrightnessQualityScore(item);
-    const renamedName = item.renamed_file_name || item.file_name || "processed_image.jpg";
-    const originalName = item.original_file_name || item.file_name || "unknown";
-    const safeName = escapeHtml(renamedName);
-    const safeOriginal = escapeHtml(originalName);
-    const safeCategory = escapeHtml(item.__category);
-    const safeLabel = escapeHtml(item.ai_label || "model_unavailable");
-    const aiConfidenceRaw = Number(item.ai_confidence);
-    const aiConfidenceLabel = Number.isFinite(aiConfidenceRaw) ? `${aiConfidenceRaw.toFixed(1)}%` : "n/a";
-    const statusSource = escapeHtml(item.status_source || "rule");
-    const safeBrightness = escapeHtml(item.brightness_level || "normal");
-    const safeStorage = escapeHtml(shortenPath(item.storage_path || "n/a"));
-    const safeProcessedStorage = escapeHtml(shortenPath(item.processed_storage_path || "n/a"));
-    const safeFolder = escapeHtml(resolveStorageFolder(item));
-    const blurRaw = Number(item.blur_score || 0);
-    const brightnessRaw = Number(item.brightness_value);
-    const brightnessRawLabel = Number.isFinite(brightnessRaw) ? `${brightnessRaw.toFixed(1)}/255` : "n/a";
-
-    const card = document.createElement("article");
-    card.className = "result-card";
-    card.innerHTML = `
-      <div class="card-image-wrap">
-        <img src="${item.preview_data_url}" alt="${safeName}" loading="lazy" />
-        <span class="status-badge ${safeCategory}">${safeCategory}</span>
-      </div>
-      <div class="card-body">
-        <h3 class="card-title">${safeName}</h3>
-        <p class="card-subtitle">Original: ${safeOriginal}</p>
-        <span class="folder-pill">Folder: ${safeFolder}</span>
-
-        <div class="metric-line">
-          <div class="label-row"><span>Blur Quality</span><strong>${blurPercent.toFixed(1)}%</strong></div>
-          <div class="progress blur"><span style="width:${blurPercent}%"></span></div>
-          <p class="metric-caption">Laplacian variance: ${blurRaw.toFixed(2)}</p>
-        </div>
-
-        <div class="metric-line">
-          <div class="label-row"><span>Brightness Quality</span><strong>${brightnessPercent.toFixed(1)}%</strong></div>
-          <div class="progress brightness"><span style="width:${brightnessPercent}%"></span></div>
-          <p class="metric-caption">HSV mean: ${brightnessRawLabel} (${safeBrightness})</p>
-        </div>
-
-        <p class="card-subtitle">AI label: ${safeLabel} (${aiConfidenceLabel})</p>
-        <p class="metric-caption">Decision source: ${statusSource}</p>
-        <p class="footer-meta">Original object: ${safeStorage}<br />Processed object: ${safeProcessedStorage}</p>
-      </div>
-    `;
-
-    resultGrid.appendChild(card);
+  categoriesToRender.forEach((categoryKey) => {
+    const items = Array.isArray(lastResultsByCategory[categoryKey]) ? lastResultsByCategory[categoryKey] : [];
+    resultGrid.appendChild(createFolderSection(categoryKey, items));
   });
+
+  updateDownloadControls();
 }
 
 function addFilesToQueue(fileList) {
@@ -660,6 +778,120 @@ function normalizeResults(payload) {
     overexposed: Array.isArray(payload.overexposed) ? payload.overexposed : [],
     duplicates: Array.isArray(payload.duplicates) ? payload.duplicates : [],
   };
+}
+
+function downloadBlob(blob, filename) {
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
+}
+
+function categoryItems(categoryKey) {
+  return Array.isArray(lastResultsByCategory[categoryKey]) ? lastResultsByCategory[categoryKey] : [];
+}
+
+async function buildZipForCategories(categories, onProgress) {
+  if (!window.JSZip) {
+    throw new Error("ZIP library failed to load. Refresh the page and try again.");
+  }
+
+  const zip = new window.JSZip();
+  const generatedAt = new Date().toISOString();
+  const manifest = {
+    generated_at: generatedAt,
+    categories: {},
+  };
+
+  categories.forEach((categoryKey) => {
+    const folder = zip.folder(categoryKey);
+    const items = categoryItems(categoryKey);
+    manifest.categories[categoryKey] = [];
+
+    items.forEach((item, index) => {
+      const renamedName = safeFileName(
+        item.renamed_file_name || item.file_name,
+        `${categoryKey}_${String(index + 1).padStart(3, "0")}.jpg`
+      );
+      const base64Payload = dataUrlToBase64Payload(item.preview_data_url);
+      if (base64Payload) {
+        folder.file(renamedName, base64Payload, { base64: true });
+      }
+
+      manifest.categories[categoryKey].push({
+        file_name: item.file_name || null,
+        renamed_file_name: renamedName,
+        final_status: item.final_status || categoryKey,
+        blur_score: item.blur_score ?? null,
+        blur_quality_score: item.blur_quality_score ?? null,
+        brightness_level: item.brightness_level ?? null,
+        brightness_value: item.brightness_value ?? null,
+        brightness_score: item.brightness_score ?? null,
+        ai_label: item.ai_label ?? null,
+        ai_confidence: item.ai_confidence ?? null,
+        storage_path: item.storage_path ?? null,
+        processed_storage_path: item.processed_storage_path ?? null,
+      });
+    });
+
+    if (!items.length) {
+      folder.file("README.txt", "No analyzed images in this category for this run.");
+    }
+  });
+
+  zip.file("manifest.json", JSON.stringify(manifest, null, 2));
+
+  return zip.generateAsync(
+    {
+      type: "blob",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
+    },
+    (meta) => {
+      if (typeof onProgress === "function") {
+        onProgress(meta);
+      }
+    }
+  );
+}
+
+async function downloadResultsZip(categories, filenamePrefix) {
+  if (isPreparingZip) {
+    return;
+  }
+
+  const normalizedCategories = categories.filter((category) => CATEGORIES.includes(category));
+  if (!normalizedCategories.length) {
+    showError("No valid categories selected for ZIP download.");
+    return;
+  }
+
+  isPreparingZip = true;
+  clearError();
+  updateDownloadControls();
+
+  try {
+    setStatus("Preparing ZIP file for download...");
+    const zipBlob = await buildZipForCategories(normalizedCategories, (meta) => {
+      const percent = clamp(Math.round(Number(meta.percent || 0)), 0, 100);
+      setStatus(`Preparing ZIP... ${percent}%`);
+    });
+
+    const fileName = `${safeFileName(filenamePrefix, "visionsort_results")}_${makeZipTimestamp()}.zip`;
+    downloadBlob(zipBlob, fileName);
+    setStatus(`ZIP downloaded: ${fileName}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "ZIP generation failed.";
+    showError(message);
+    setStatus("ZIP download failed.");
+  } finally {
+    isPreparingZip = false;
+    updateDownloadControls();
+  }
 }
 
 async function getResponseErrorMessage(response) {
@@ -1063,6 +1295,26 @@ function handleQueueClick(event) {
   updateQueueMetrics();
 }
 
+function handleResultGridClick(event) {
+  const button = event.target.closest("[data-download-category]");
+  if (!button) {
+    return;
+  }
+
+  const category = String(button.dataset.downloadCategory || "");
+  if (!CATEGORIES.includes(category)) {
+    return;
+  }
+
+  const items = categoryItems(category);
+  if (!items.length) {
+    showError(`No analyzed images available in ${category} folder.`);
+    return;
+  }
+
+  downloadResultsZip([category], `${category}_folder`);
+}
+
 function handleDropZoneKey(event) {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
@@ -1098,9 +1350,20 @@ imageInput.addEventListener("change", () => {
 });
 
 queueList.addEventListener("click", handleQueueClick);
+resultGrid.addEventListener("click", handleResultGridClick);
 analyzeBtn.addEventListener("click", uploadImages);
 clearQueueBtn.addEventListener("click", clearQueue);
 cancelBtn.addEventListener("click", clearQueue);
+if (downloadAllZipBtn) {
+  downloadAllZipBtn.addEventListener("click", () => {
+    const categoriesWithItems = CATEGORIES.filter((category) => categoryItems(category).length > 0);
+    if (!categoriesWithItems.length) {
+      showError("No analyzed images available for ZIP download.");
+      return;
+    }
+    downloadResultsZip(categoriesWithItems, "visionsort_folders");
+  });
+}
 
 chipRow.addEventListener("click", (event) => {
   const chip = event.target.closest(".chip[data-filter]");
@@ -1116,6 +1379,7 @@ updateSummaryChips(lastResultsByCategory);
 renderResultCards();
 setFilter("all");
 resetProgress();
+updateDownloadControls();
 
 if (fileSizeLimitBadge) {
   fileSizeLimitBadge.textContent = `MAX ${MAX_FILE_SIZE_MB}MB`;

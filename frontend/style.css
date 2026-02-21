@@ -250,6 +250,25 @@ body {
   color: #9db0da;
 }
 
+.metric-mini-progress {
+  margin: 8px 0 10px;
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(71, 97, 155, 0.42);
+  overflow: hidden;
+}
+
+.metric-mini-progress > span {
+  display: block;
+  width: 0%;
+  max-width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffae2e, #ffe66b);
+  transition: width 0.28s ease;
+}
+
 .metric-card.good {
   box-shadow: inset 0 -2px 0 #2f5dff;
 }
@@ -578,6 +597,14 @@ body {
   gap: 16px;
 }
 
+.results-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .results-head h2 {
   margin: 0;
   font-size: clamp(1.3rem, 2vw, 1.7rem);
@@ -652,8 +679,62 @@ body {
 
 .result-grid {
   display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.folder-section {
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(14, 24, 56, 0.95), rgba(9, 16, 38, 0.95));
+  box-shadow: 0 14px 24px rgba(3, 9, 26, 0.28);
+  padding: 14px;
+}
+
+.folder-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.folder-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.folder-title h3 {
+  margin: 0;
+  font-size: 1.02rem;
+  font-family: "Manrope", sans-serif;
+  letter-spacing: 0.01em;
+}
+
+.folder-count {
+  font-size: 0.78rem;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(76, 113, 203, 0.52);
+  color: #9bb2e6;
+}
+
+.folder-body {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
+}
+
+.folder-empty {
+  border-radius: 12px;
+  border: 1px dashed rgba(80, 112, 189, 0.5);
+  background: rgba(14, 23, 50, 0.74);
+  color: #a8bce6;
+  padding: 18px;
+  text-align: center;
+  grid-column: 1 / -1;
 }
 
 .result-empty {
@@ -674,6 +755,7 @@ body {
   box-shadow: 0 18px 28px rgba(3, 9, 26, 0.36);
   display: grid;
   min-height: 390px;
+  min-width: 0;
 }
 
 .card-image-wrap {
@@ -728,6 +810,7 @@ body {
   padding: 14px 14px 16px;
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .card-title {
@@ -754,21 +837,41 @@ body {
 .metric-line .label-row {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
   color: #9cb0dd;
   font-size: 0.77rem;
   font-family: "Manrope", sans-serif;
+  min-width: 0;
+}
+
+.metric-line .label-row span,
+.metric-line .label-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-line .label-row strong {
+  flex-shrink: 0;
 }
 
 .progress {
+  width: 100%;
+  max-width: 100%;
   border-radius: 999px;
   height: 7px;
   background: rgba(71, 97, 155, 0.4);
   overflow: hidden;
+  position: relative;
 }
 
 .progress > span {
   display: block;
+  width: 0%;
+  max-width: 100%;
+  min-width: 0;
   height: 100%;
+  transition: width 0.28s ease;
 }
 
 .progress.blur > span {
@@ -853,7 +956,7 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .result-grid {
+  .folder-body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -903,7 +1006,8 @@ body {
     align-items: stretch;
   }
 
-  .results-head {
+  .results-head,
+  .results-head-actions {
     flex-direction: column;
     align-items: flex-start;
   }
@@ -914,7 +1018,7 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 
-  .result-grid {
+  .folder-body {
     grid-template-columns: 1fr;
   }
 }
