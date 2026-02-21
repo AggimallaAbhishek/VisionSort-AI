@@ -154,10 +154,20 @@ cd backend
 source .venv/bin/activate
 python train_mobilenetv2.py \
   --data-root ../training_data \
-  --epochs 8 \
+  --epochs 24 \
   --batch-size 16 \
-  --freeze-features
+  --freeze-features \
+  --unfreeze-epoch 5 \
+  --patience 6
 ```
+
+This training script now includes:
+
+- stronger augmentation
+- class-balanced loss weights
+- staged fine-tuning (head first, then backbone)
+- early stopping
+- per-class validation metrics
 
 Expected dataset structure:
 
