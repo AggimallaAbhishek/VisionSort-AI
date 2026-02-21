@@ -296,6 +296,10 @@ def save_checkpoint(
     args: argparse.Namespace,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_args = {
+        key: (str(value) if isinstance(value, Path) else value)
+        for key, value in vars(args).items()
+    }
     checkpoint = {
         "state_dict": model.state_dict(),
         "class_names": CLASS_NAMES,
@@ -303,7 +307,7 @@ def save_checkpoint(
         "image_size": args.image_size,
         "best_val_accuracy": best_val_acc,
         "trained_at": datetime.now(timezone.utc).isoformat(),
-        "args": vars(args),
+        "args": safe_args,
     }
     torch.save(checkpoint, output_path)
 

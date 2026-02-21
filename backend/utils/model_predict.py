@@ -45,7 +45,12 @@ class QualityModel:
             return
 
         try:
-            checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+            # Torch >=2.6 defaults to weights_only=True; our trusted local checkpoint may
+            # contain metadata objects, so force full load for compatibility.
+            try:
+                checkpoint = torch.load(MODEL_PATH, map_location=DEVICE, weights_only=False)
+            except TypeError:
+                checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
             state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
             self.model.load_state_dict(state_dict)
             self.available = True
