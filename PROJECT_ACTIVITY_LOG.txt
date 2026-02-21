@@ -197,3 +197,14 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - node --check /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js (passed)
   - git status confirmed modified frontend files only for this change set
   Status: done
+
+- [2026-02-21 22:05:53 IST (+0530)] Actor: Codex
+  Action: Fixed remaining result-card overflow where folder/path text and card grid could exceed container bounds on desktop widths.
+  Scope: frontend ui/ux polish
+  Files/Services:
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/style.css
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js
+  Validation:
+  - node --check /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js (passed)
+  - CSS updated with auto-fit grid, section overflow clipping, and text truncation/wrap guards
+  Status: done

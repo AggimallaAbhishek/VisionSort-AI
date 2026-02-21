@@ -689,6 +689,7 @@ body {
   background: linear-gradient(180deg, rgba(14, 24, 56, 0.95), rgba(9, 16, 38, 0.95));
   box-shadow: 0 14px 24px rgba(3, 9, 26, 0.28);
   padding: 14px;
+  overflow: hidden;
 }
 
 .folder-head {
@@ -723,8 +724,9 @@ body {
 
 .folder-body {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 14px;
+  min-width: 0;
 }
 
 .folder-empty {
@@ -756,6 +758,8 @@ body {
   display: grid;
   min-height: 390px;
   min-width: 0;
+  width: 100%;
+  max-width: 100%;
 }
 
 .card-image-wrap {
@@ -832,6 +836,7 @@ body {
 .metric-line {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .metric-line .label-row {
@@ -887,14 +892,19 @@ body {
   font-size: 0.75rem;
   color: #8ea3d3;
   font-family: "Manrope", sans-serif;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .folder-pill {
-  display: inline-flex;
+  display: block;
   align-items: center;
   gap: 6px;
   margin-top: 2px;
   padding: 5px 8px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border-radius: 999px;
   font-size: 0.72rem;
   letter-spacing: 0.04em;
@@ -902,6 +912,9 @@ body {
   color: #bfd1f7;
   background: rgba(24, 37, 73, 0.78);
   border: 1px solid rgba(82, 112, 187, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .footer-meta {
@@ -909,6 +922,8 @@ body {
   font-size: 0.74rem;
   color: #8ca2d3;
   line-height: 1.45;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 
@@ -953,10 +968,6 @@ body {
 
 @media (max-width: 1120px) {
   .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .folder-body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

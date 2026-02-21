@@ -588,7 +588,9 @@ function buildResultCardElement(item, categoryKey) {
   const safeBrightness = escapeHtml(item.brightness_level || "normal");
   const safeStorage = escapeHtml(shortenPath(item.storage_path || "n/a"));
   const safeProcessedStorage = escapeHtml(shortenPath(item.processed_storage_path || "n/a"));
-  const safeFolder = escapeHtml(resolveStorageFolder(item));
+  const fullFolderPath = resolveStorageFolder(item);
+  const safeFolder = escapeHtml(shortenPath(fullFolderPath, 48));
+  const safeFolderFull = escapeHtml(fullFolderPath);
   const blurRaw = Number(item.blur_score || 0);
   const brightnessRaw = Number(item.brightness_value);
   const brightnessRawLabel = Number.isFinite(brightnessRaw) ? `${brightnessRaw.toFixed(1)}/255` : "n/a";
@@ -604,7 +606,7 @@ function buildResultCardElement(item, categoryKey) {
     <div class="card-body">
       <h3 class="card-title">${safeName}</h3>
       <p class="card-subtitle">Original: ${safeOriginal}</p>
-      <span class="folder-pill">Folder: ${safeFolder}</span>
+      <span class="folder-pill" title="${safeFolderFull}">Folder: ${safeFolder}</span>
 
       <div class="metric-line">
         <div class="label-row"><span>Blur Quality</span><strong>${blurPercent.toFixed(1)}%</strong></div>
