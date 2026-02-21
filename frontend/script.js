@@ -65,6 +65,8 @@ const ASYNC_POLL_INTERVAL_MS = 700;
 const ASYNC_TIMEOUT_MS = 8 * 60 * 1000;
 const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 18 * 1000;
 const ASYNC_QUEUE_STALL_TIMEOUT_MS = 90 * 1000;
+const BATCH_RETRY_COUNT = 2;
+const BATCH_RETRY_DELAY_MS = 1200;
 
 const dropZone = document.getElementById("dropZone");
 const imageInput = document.getElementById("imageInput");
@@ -1291,38 +1293,47 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
   const batchPrefix = totalBatches > 1 ? `Batch ${batchIndex}/${totalBatches}` : "Batch 1/1";
   const filesCount = batchFiles.length;
   const sizeLabel = bytesToSize(totalBytes(batchFiles));
+  let lastSummary = `${batchPrefix}: no reachable endpoint.`;
 
-  setProgress(
-    clamp(Math.round(((batchIndex - 1) / totalBatches) * 100), 2, 99),
-    "Queueing",
-    `${batchPrefix}: preparing ${filesCount} files (${sizeLabel})...`
-  );
+  for (let attempt = 1; attempt <= BATCH_RETRY_COUNT; attempt += 1) {
+    setProgress(
+      clamp(Math.round(((batchIndex - 1) / totalBatches) * 100), 2, 99),
+      "Queueing",
+      `${batchPrefix}: preparing ${filesCount} files (${sizeLabel})... attempt ${attempt}/${BATCH_RETRY_COUNT}`
+    );
 
-  const asyncFlow = await runAsyncUploadFlow(batchFiles);
-  if (asyncFlow.ok) {
-    return {
-      ok: true,
-      endpoint: asyncFlow.endpoint,
-      requestId: asyncFlow.requestId || "",
-      results: asyncFlow.results,
-    };
+    const asyncFlow = await runAsyncUploadFlow(batchFiles);
+    if (asyncFlow.ok) {
+      return {
+        ok: true,
+        endpoint: asyncFlow.endpoint,
+        requestId: asyncFlow.requestId || "",
+        results: asyncFlow.results,
+      };
+    }
+
+    const syncFlow = await runSyncUploadFlow(batchFiles);
+    if (syncFlow.ok) {
+      return {
+        ok: true,
+        endpoint: syncFlow.endpoint,
+        requestId: syncFlow.requestId || "",
+        results: syncFlow.results,
+      };
+    }
+
+    const allFailures = [...asyncFlow.failures, ...syncFlow.failures];
+    lastSummary = allFailures.length ? allFailures[allFailures.length - 1] : lastSummary;
+
+    if (attempt < BATCH_RETRY_COUNT) {
+      setStatus(`${batchPrefix}: network issue detected, retrying...`);
+      await sleep(BATCH_RETRY_DELAY_MS);
+    }
   }
 
-  const syncFlow = await runSyncUploadFlow(batchFiles);
-  if (syncFlow.ok) {
-    return {
-      ok: true,
-      endpoint: syncFlow.endpoint,
-      requestId: syncFlow.requestId || "",
-      results: syncFlow.results,
-    };
-  }
-
-  const allFailures = [...asyncFlow.failures, ...syncFlow.failures];
-  const summary = allFailures.length ? allFailures[allFailures.length - 1] : `${batchPrefix}: no reachable endpoint.`;
   return {
     ok: false,
-    error: `${batchPrefix} failed. ${summary}`,
+    error: `${batchPrefix} failed after ${BATCH_RETRY_COUNT} attempt(s). ${lastSummary}`,
   };
 }
 

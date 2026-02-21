@@ -233,3 +233,19 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - Frontend JS syntax check passed
   - Added tunables: `PREVIEW_MAX_WIDTH=640`, `PREVIEW_JPEG_QUALITY=70`
   Status: done
+
+- [2026-02-22 02:13:49 IST (+0530)] Actor: Codex
+  Action: Performed deeper core-code bug pass and fixed request hang behavior in persistence flow (sequential future wait bug), added bounded overall persistence timeout, added frontend per-batch retry for transient network failures, and bumped frontend script cache version.
+  Scope: backend + frontend core reliability
+  Files/Services:
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/main.py
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/.env.example
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/render.yaml
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/index.html
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/README.md
+  Validation:
+  - `node --check /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js` passed
+  - backend source compile checks passed (`compile(...)` for core Python files)
+  - Added env: `PERSIST_OVERALL_TIMEOUT_SECONDS=90`
+  Status: done

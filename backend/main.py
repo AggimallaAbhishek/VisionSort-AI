@@ -11,7 +11,7 @@ import os
 import re
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -61,6 +61,7 @@ PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
 PERSIST_TASK_TIMEOUT_SECONDS = max(2, int(os.getenv("PERSIST_TASK_TIMEOUT_SECONDS", "30")))
+PERSIST_OVERALL_TIMEOUT_SECONDS = max(15, int(os.getenv("PERSIST_OVERALL_TIMEOUT_SECONDS", "90")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
 RATE_LIMIT_MAX_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "30")))
 
@@ -276,6 +277,7 @@ def root() -> Dict[str, Any]:
             "persist_workers": PERSIST_WORKERS,
             "upload_job_workers": UPLOAD_JOB_WORKERS,
             "persist_task_timeout_seconds": PERSIST_TASK_TIMEOUT_SECONDS,
+            "persist_overall_timeout_seconds": PERSIST_OVERALL_TIMEOUT_SECONDS,
         },
         "limits": {
             "max_file_size_mb": MAX_FILE_SIZE_MB,
@@ -395,8 +397,6 @@ def decode_image(raw_bytes: bytes) -> np.ndarray:
         return cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
     except Exception as exc:
         raise ValueError("Failed to decode image bytes.") from exc
-
-    return image
 
 
 def resize_image(image: np.ndarray, max_width: int) -> np.ndarray:
@@ -822,22 +822,36 @@ def process_upload_payloads(
     if progress_hook and total_files:
         progress_hook(total_files, total_files, "", "finalizing")
 
-    for future, item, file_name in persistence_tasks:
+    if persistence_tasks:
+        future_map: Dict[Future[Tuple[str | None, str | None]], Tuple[Dict[str, Any], str]] = {
+            future: (item, file_name) for future, item, file_name in persistence_tasks
+        }
+        completed_futures: set[Future[Tuple[str | None, str | None]]] = set()
+
         try:
-            uploads_storage_path, processed_storage_path = future.result(
-                timeout=PERSIST_TASK_TIMEOUT_SECONDS
-            )
-            item["storage_path"] = uploads_storage_path
-            item["processed_storage_path"] = processed_storage_path
+            for future in as_completed(future_map, timeout=PERSIST_OVERALL_TIMEOUT_SECONDS):
+                item, file_name = future_map[future]
+                completed_futures.add(future)
+                try:
+                    uploads_storage_path, processed_storage_path = future.result()
+                    item["storage_path"] = uploads_storage_path
+                    item["processed_storage_path"] = processed_storage_path
+                except Exception as exc:
+                    logger.exception("Persistence task failed for %s: %s", file_name, exc)
         except FutureTimeoutError:
-            future.cancel()
             logger.error(
-                "Persistence task timed out after %ss for %s",
-                PERSIST_TASK_TIMEOUT_SECONDS,
-                file_name,
+                "Persistence phase exceeded overall timeout (%ss). Completing with partial storage paths.",
+                PERSIST_OVERALL_TIMEOUT_SECONDS,
             )
-        except Exception as exc:
-            logger.exception("Persistence task failed for %s: %s", file_name, exc)
+        finally:
+            for future, (_, file_name) in future_map.items():
+                if future in completed_futures:
+                    continue
+                future.cancel()
+                logger.error(
+                    "Persistence task did not complete before overall timeout for %s",
+                    file_name,
+                )
 
     if metadata_rows:
         try:

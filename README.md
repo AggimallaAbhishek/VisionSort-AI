@@ -218,6 +218,7 @@ Optional AI + rule fusion knobs:
 - `ALLOWED_ORIGINS` (include your Vercel domain)
 - `ALLOWED_ORIGIN_REGEX` (recommended: `^https://.*\\.vercel\\.app$`)
 - `PERSIST_TASK_TIMEOUT_SECONDS` (recommended: `30`)
+- `PERSIST_OVERALL_TIMEOUT_SECONDS` (recommended: `90`)
 - `S3_CONNECT_TIMEOUT_SECONDS` (recommended: `3`)
 - `S3_READ_TIMEOUT_SECONDS` (recommended: `12`)
 - `S3_MAX_ATTEMPTS` (recommended: `2`)
