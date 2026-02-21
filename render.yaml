@@ -36,8 +36,26 @@ services:
       - key: MAX_IMAGE_WIDTH
         value: "1024"
       - key: MAX_FILE_SIZE_MB
-        value: "10"
+        value: "100"
       - key: MAX_FILES
         value: "50"
       - key: ENABLE_AI_LABEL
         value: "true"
+      - key: PERSIST_WORKERS
+        value: "6"
+      - key: UPLOAD_JOB_WORKERS
+        value: "2"
+      - key: JOB_RETENTION_MINUTES
+        value: "60"
+      - key: PERSIST_TASK_TIMEOUT_SECONDS
+        value: "30"
+      - key: S3_CONNECT_TIMEOUT_SECONDS
+        value: "3"
+      - key: S3_READ_TIMEOUT_SECONDS
+        value: "12"
+      - key: S3_MAX_ATTEMPTS
+        value: "2"
+      - key: DB_CONNECT_TIMEOUT_SECONDS
+        value: "8"
+      - key: DB_STATEMENT_TIMEOUT_MS
+        value: "15000"

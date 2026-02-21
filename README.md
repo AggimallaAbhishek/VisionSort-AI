@@ -217,6 +217,12 @@ Optional AI + rule fusion knobs:
 - `DATABASE_URL`
 - `ALLOWED_ORIGINS` (include your Vercel domain)
 - `ALLOWED_ORIGIN_REGEX` (recommended: `^https://.*\\.vercel\\.app$`)
+- `PERSIST_TASK_TIMEOUT_SECONDS` (recommended: `30`)
+- `S3_CONNECT_TIMEOUT_SECONDS` (recommended: `3`)
+- `S3_READ_TIMEOUT_SECONDS` (recommended: `12`)
+- `S3_MAX_ATTEMPTS` (recommended: `2`)
+- `DB_CONNECT_TIMEOUT_SECONDS` (recommended: `8`)
+- `DB_STATEMENT_TIMEOUT_MS` (recommended: `15000`)
 
 ### Vercel frontend
 
@@ -231,3 +237,5 @@ Optional AI + rule fusion knobs:
 - Backend validates max file count, file size, and allowed image types.
 - Images are resized using `MAX_IMAGE_WIDTH` before analysis.
 - If model weights are missing/untrained, `ai_label` is `model_unavailable`.
+- For large uploads, prefer async endpoint `POST /upload/async` and poll `GET /jobs/{job_id}`.
+- Use `GET /` to confirm timeout config values after Render deploy.

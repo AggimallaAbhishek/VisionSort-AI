@@ -11,7 +11,7 @@ import os
 import re
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -58,6 +58,7 @@ OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS = max(
 PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
+PERSIST_TASK_TIMEOUT_SECONDS = max(2, int(os.getenv("PERSIST_TASK_TIMEOUT_SECONDS", "30")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
 RATE_LIMIT_MAX_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "30")))
 
@@ -272,6 +273,7 @@ def root() -> Dict[str, Any]:
         "workers": {
             "persist_workers": PERSIST_WORKERS,
             "upload_job_workers": UPLOAD_JOB_WORKERS,
+            "persist_task_timeout_seconds": PERSIST_TASK_TIMEOUT_SECONDS,
         },
         "limits": {
             "max_file_size_mb": MAX_FILE_SIZE_MB,
@@ -817,9 +819,18 @@ def process_upload_payloads(
 
     for future, item, file_name in persistence_tasks:
         try:
-            uploads_storage_path, processed_storage_path = future.result()
+            uploads_storage_path, processed_storage_path = future.result(
+                timeout=PERSIST_TASK_TIMEOUT_SECONDS
+            )
             item["storage_path"] = uploads_storage_path
             item["processed_storage_path"] = processed_storage_path
+        except FutureTimeoutError:
+            future.cancel()
+            logger.error(
+                "Persistence task timed out after %ss for %s",
+                PERSIST_TASK_TIMEOUT_SECONDS,
+                file_name,
+            )
         except Exception as exc:
             logger.exception("Persistence task failed for %s: %s", file_name, exc)
 
