@@ -193,6 +193,15 @@ After training:
 2. Set `ENABLE_AI_LABEL=true` in backend env.
 3. Restart backend and test upload.
 
+Optional AI + rule fusion knobs:
+
+- `AI_ASSISTED_STATUS=true` enable AI-assisted final status calibration
+- `AI_MIN_CONFIDENCE=0.70` minimum confidence for AI to affect status
+- `AI_PROMOTE_GOOD_CONFIDENCE=0.90` required confidence to promote a rule issue to `good`
+- `AI_BORDERLINE_FACTOR=0.90` how close to blur threshold a sample must be for AI promotion
+- `DARK_PROMOTE_MIN_BRIGHTNESS=45` dark-to-good promotion lower bound
+- `OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS=210` overexposed-to-good promotion upper bound
+
 ## Deploy
 
 ### Render backend

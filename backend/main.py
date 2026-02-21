@@ -47,6 +47,14 @@ DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "anonymous")
 RENAMED_FILE_PREFIX = (
     re.sub(r"[^a-zA-Z0-9_-]", "_", os.getenv("RENAMED_FILE_PREFIX", "vin_img").strip()) or "vin_img"
 )
+AI_ASSISTED_STATUS = os.getenv("AI_ASSISTED_STATUS", "true").lower() == "true"
+AI_MIN_CONFIDENCE = max(0.0, min(1.0, float(os.getenv("AI_MIN_CONFIDENCE", "0.70"))))
+AI_PROMOTE_GOOD_CONFIDENCE = max(0.0, min(1.0, float(os.getenv("AI_PROMOTE_GOOD_CONFIDENCE", "0.90"))))
+AI_BORDERLINE_FACTOR = max(0.5, min(1.2, float(os.getenv("AI_BORDERLINE_FACTOR", "0.90"))))
+DARK_PROMOTE_MIN_BRIGHTNESS = max(0.0, min(255.0, float(os.getenv("DARK_PROMOTE_MIN_BRIGHTNESS", "45"))))
+OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS = max(
+    0.0, min(255.0, float(os.getenv("OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS", "210")))
+)
 PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
@@ -113,7 +121,7 @@ UploadPayload = Dict[str, Any]
 ProgressHook = Callable[[int, int, str, str], None]
 upload_jobs: Dict[str, Dict[str, Any]] = {}
 upload_jobs_lock = Lock()
-predict_quality_func: Callable[[Image.Image], str] | None = None
+predict_quality_func: Callable[[Image.Image], Any] | None = None
 predict_quality_init_attempted = False
 rate_limit_events: Dict[str, deque[float]] = {}
 rate_limit_lock = Lock()
@@ -273,6 +281,12 @@ def root() -> Dict[str, Any]:
             "rate_limit_max_requests": RATE_LIMIT_MAX_REQUESTS,
             "rate_limit_window_seconds": RATE_LIMIT_WINDOW_SECONDS,
         },
+        "ai": {
+            "enabled": ENABLE_AI_LABEL,
+            "assisted_status": AI_ASSISTED_STATUS,
+            "min_confidence": AI_MIN_CONFIDENCE,
+            "promote_good_confidence": AI_PROMOTE_GOOD_CONFIDENCE,
+        },
     }
 
 
@@ -407,8 +421,8 @@ def bgr_to_pil(image: np.ndarray) -> Image.Image:
     return Image.fromarray(rgb)
 
 
-def choose_final_status(blur_score: float, brightness_level: str, duplicate: bool) -> str:
-    """Choose final category based on image metrics."""
+def choose_rule_status(blur_score: float, brightness_level: str, duplicate: bool) -> str:
+    """Choose deterministic rule-based category from image metrics."""
     if duplicate:
         return "duplicates"
     if brightness_level == "dark":
@@ -418,6 +432,45 @@ def choose_final_status(blur_score: float, brightness_level: str, duplicate: boo
     if blur_score < BLUR_THRESHOLD:
         return "blurry"
     return "good"
+
+
+def choose_final_status(
+    *,
+    blur_score: float,
+    brightness_level: str,
+    brightness_value: float,
+    duplicate: bool,
+    ai_label: str,
+    ai_confidence: float,
+) -> Tuple[str, str]:
+    """Choose final status by combining deterministic rules with high-confidence AI."""
+    rule_status = choose_rule_status(blur_score, brightness_level, duplicate)
+
+    if not AI_ASSISTED_STATUS or ai_label in {"disabled", "model_unavailable"}:
+        return rule_status, "rule"
+    if ai_confidence < AI_MIN_CONFIDENCE:
+        return rule_status, "rule"
+    if rule_status == "duplicates":
+        return rule_status, "rule"
+
+    allowed_ai_labels = {"good", "blurry", "dark", "overexposed"}
+    if ai_label not in allowed_ai_labels:
+        return rule_status, "rule"
+
+    # If rules say "good" but AI is confident it's an issue, allow downgrade.
+    if rule_status == "good" and ai_label != "good":
+        return ai_label, "ai_override"
+
+    # If rules mark an issue but AI strongly predicts "good", only promote when borderline.
+    if rule_status != "good" and ai_label == "good" and ai_confidence >= AI_PROMOTE_GOOD_CONFIDENCE:
+        if rule_status == "blurry" and blur_score >= BLUR_THRESHOLD * AI_BORDERLINE_FACTOR:
+            return "good", "ai_override"
+        if rule_status == "dark" and brightness_value >= DARK_PROMOTE_MIN_BRIGHTNESS:
+            return "good", "ai_override"
+        if rule_status == "overexposed" and brightness_value <= OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS:
+            return "good", "ai_override"
+
+    return rule_status, "rule"
 
 
 def clamp_percent(value: float) -> float:
@@ -468,7 +521,9 @@ def build_item_payload(
     brightness_value: float,
     brightness_score: float,
     ai_label: str,
+    ai_confidence: float,
     final_status: str,
+    status_source: str,
     preview_data_url: str,
     storage_path: str | None,
     processed_storage_path: str | None,
@@ -485,7 +540,9 @@ def build_item_payload(
         "brightness_value": round(brightness_value, 2),
         "brightness_score": round(brightness_score, 2),
         "ai_label": ai_label,
+        "ai_confidence": round(clamp_percent(ai_confidence * 100.0), 2),
         "final_status": final_status,
+        "status_source": status_source,
         "storage_folder": storage_folder,
         "preview_data_url": preview_data_url,
         "storage_path": storage_path,
@@ -513,31 +570,38 @@ def build_metadata_row(
     }
 
 
-def predict_quality_label(image: Image.Image) -> str:
-    """Return AI label using lazy model initialization to reduce memory usage."""
+def predict_quality_label(image: Image.Image) -> Tuple[str, float]:
+    """Return AI label + confidence using lazy model initialization."""
     if not ENABLE_AI_LABEL:
-        return "disabled"
+        return "disabled", 0.0
 
     global predict_quality_func, predict_quality_init_attempted
 
     if predict_quality_func is None and not predict_quality_init_attempted:
         predict_quality_init_attempted = True
         try:
-            from utils.model_predict import predict_quality as loaded_predict_quality
+            from utils.model_predict import predict_quality_with_confidence as loaded_predict_quality
 
             predict_quality_func = loaded_predict_quality
         except Exception as exc:
             logger.exception("AI model initialization failed: %s", exc)
-            return "model_unavailable"
+            return "model_unavailable", 0.0
 
     if predict_quality_func is None:
-        return "model_unavailable"
+        return "model_unavailable", 0.0
 
     try:
-        return predict_quality_func(image)
+        prediction = predict_quality_func(image)
+        if isinstance(prediction, dict):
+            label = str(prediction.get("label", "model_unavailable"))
+            confidence = float(prediction.get("confidence", 0.0) or 0.0)
+            return label, max(0.0, min(1.0, confidence))
+        if isinstance(prediction, str):
+            return prediction, 0.0
+        return "model_unavailable", 0.0
     except Exception as exc:
         logger.exception("AI inference failed: %s", exc)
-        return "model_unavailable"
+        return "model_unavailable", 0.0
 
 
 def build_results_template() -> Dict[str, List[Dict[str, Any]]]:
@@ -684,8 +748,15 @@ def process_upload_payloads(
             brightness_score = calculate_brightness_quality_score(brightness_value)
             brightness_level = analyze_brightness(resized_image)
             duplicate = is_duplicate(pil_image, seen_hashes, threshold=DUPLICATE_HASH_DISTANCE)
-            ai_label = predict_quality_label(pil_image)
-            final_status = choose_final_status(blur_score, brightness_level, duplicate)
+            ai_label, ai_confidence = predict_quality_label(pil_image)
+            final_status, status_source = choose_final_status(
+                blur_score=blur_score,
+                brightness_level=brightness_level,
+                brightness_value=brightness_value,
+                duplicate=duplicate,
+                ai_label=ai_label,
+                ai_confidence=ai_confidence,
+            )
             processed_count += 1
 
             renamed_extension = resolve_extension(content_type, original_file_name)
@@ -703,7 +774,9 @@ def process_upload_payloads(
                 brightness_value=brightness_value,
                 brightness_score=brightness_score,
                 ai_label=ai_label,
+                ai_confidence=ai_confidence,
                 final_status=final_status,
+                status_source=status_source,
                 storage_folder=storage_folder,
                 preview_data_url=preview_data_url,
                 storage_path=None,

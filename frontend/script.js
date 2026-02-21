@@ -545,6 +545,9 @@ function renderResultCards() {
     const safeOriginal = escapeHtml(originalName);
     const safeCategory = escapeHtml(item.__category);
     const safeLabel = escapeHtml(item.ai_label || "model_unavailable");
+    const aiConfidenceRaw = Number(item.ai_confidence);
+    const aiConfidenceLabel = Number.isFinite(aiConfidenceRaw) ? `${aiConfidenceRaw.toFixed(1)}%` : "n/a";
+    const statusSource = escapeHtml(item.status_source || "rule");
     const safeBrightness = escapeHtml(item.brightness_level || "normal");
     const safeStorage = escapeHtml(shortenPath(item.storage_path || "n/a"));
     const safeProcessedStorage = escapeHtml(shortenPath(item.processed_storage_path || "n/a"));
@@ -577,7 +580,8 @@ function renderResultCards() {
           <p class="metric-caption">HSV mean: ${brightnessRawLabel} (${safeBrightness})</p>
         </div>
 
-        <p class="card-subtitle">AI label: ${safeLabel}</p>
+        <p class="card-subtitle">AI label: ${safeLabel} (${aiConfidenceLabel})</p>
+        <p class="metric-caption">Decision source: ${statusSource}</p>
         <p class="footer-meta">Original object: ${safeStorage}<br />Processed object: ${safeProcessedStorage}</p>
       </div>
     `;

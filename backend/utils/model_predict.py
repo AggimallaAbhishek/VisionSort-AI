@@ -59,15 +59,18 @@ class QualityModel:
             logger.exception("Failed to load model weights from %s: %s", MODEL_PATH, exc)
             self.available = False
 
-    def predict(self, image: Image.Image) -> str:
+    def predict_with_confidence(self, image: Image.Image) -> tuple[str, float]:
         if not self.available:
-            return "model_unavailable"
+            return "model_unavailable", 0.0
 
         input_tensor = TRANSFORM(image).unsqueeze(0).to(DEVICE)
         with torch.no_grad():
             logits = self.model(input_tensor)
-            pred_index = int(torch.argmax(logits, dim=1).item())
-        return CLASS_NAMES[pred_index]
+            probs = torch.softmax(logits, dim=1)
+            confidence_tensor, pred_tensor = torch.max(probs, dim=1)
+            pred_index = int(pred_tensor.item())
+            confidence = float(confidence_tensor.item())
+        return CLASS_NAMES[pred_index], confidence
 
 
 _MODEL = QualityModel()
@@ -75,4 +78,11 @@ _MODEL = QualityModel()
 
 def predict_quality(image: Image.Image) -> str:
     """Predict quality label using a preloaded CNN model."""
-    return _MODEL.predict(image)
+    label, _ = _MODEL.predict_with_confidence(image)
+    return label
+
+
+def predict_quality_with_confidence(image: Image.Image) -> dict[str, float | str]:
+    """Predict quality label and confidence using a preloaded CNN model."""
+    label, confidence = _MODEL.predict_with_confidence(image)
+    return {"label": label, "confidence": confidence}
