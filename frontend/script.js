@@ -26,11 +26,22 @@ const configuredMaxFiles = parseLimit(
   document.querySelector('meta[name="visionsort-max-files"]')?.getAttribute("content"),
   50
 );
+const configuredBatchRequestSizeMb = parseLimit(
+  document.querySelector('meta[name="visionsort-max-request-size-mb"]')?.getAttribute("content"),
+  35
+);
+const configuredMaxBatchFiles = parseLimit(
+  document.querySelector('meta[name="visionsort-max-batch-files"]')?.getAttribute("content"),
+  10
+);
 
 const DEFAULT_DEPLOYED_API_BASE_URL = "https://visionsort-ai.onrender.com";
 const MAX_FILE_SIZE_MB = configuredMaxFileSizeMb;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 const MAX_FILES = configuredMaxFiles;
+const MAX_REQUEST_SIZE_MB = configuredBatchRequestSizeMb;
+const MAX_REQUEST_SIZE_BYTES = MAX_REQUEST_SIZE_MB * 1024 * 1024;
+const MAX_BATCH_FILES = configuredMaxBatchFiles;
 const ALLOWED_TYPES = new Set([
   "image/jpeg",
   "image/jpg",
@@ -248,12 +259,51 @@ function bytesToSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function totalBytes(files) {
+  return files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
 function hasAnyResults(results) {
   return CATEGORIES.some((key) => Array.isArray(results[key]) && results[key].length > 0);
+}
+
+function mergeResults(target, incoming) {
+  CATEGORIES.forEach((category) => {
+    const sourceItems = Array.isArray(incoming[category]) ? incoming[category] : [];
+    target[category].push(...sourceItems);
+  });
+  return target;
+}
+
+function buildUploadBatches(files) {
+  const batches = [];
+  let currentBatch = [];
+  let currentBatchBytes = 0;
+
+  files.forEach((file) => {
+    const fileBytes = Number(file.size) || 0;
+    const wouldExceedFileCount = currentBatch.length >= MAX_BATCH_FILES;
+    const wouldExceedRequestSize = currentBatchBytes + fileBytes > MAX_REQUEST_SIZE_BYTES;
+
+    if (currentBatch.length > 0 && (wouldExceedFileCount || wouldExceedRequestSize)) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentBatchBytes = 0;
+    }
+
+    currentBatch.push(file);
+    currentBatchBytes += fileBytes;
+  });
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
 }
 
 function sleep(ms) {
@@ -949,12 +999,16 @@ async function attemptUpload(endpoint, files) {
       data: payload,
     };
   } catch (error) {
+    let message = error instanceof Error ? error.message : "Unexpected network error.";
+    if (message === "Failed to fetch") {
+      message = "Failed to fetch (network/CORS/request size/backend restart).";
+    }
     return {
       ok: false,
       status: 0,
       endpoint,
       requestId: "",
-      error: error instanceof Error ? error.message : "Unexpected network error.",
+      error: message,
     };
   }
 }
@@ -1233,6 +1287,45 @@ function applySuccessfulResults(endpoint, results, requestId = "") {
   setStatus(`Completed via ${endpoint} in ${elapsed}.${requestIdSuffix(requestId)}`);
 }
 
+async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
+  const batchPrefix = totalBatches > 1 ? `Batch ${batchIndex}/${totalBatches}` : "Batch 1/1";
+  const filesCount = batchFiles.length;
+  const sizeLabel = bytesToSize(totalBytes(batchFiles));
+
+  setProgress(
+    clamp(Math.round(((batchIndex - 1) / totalBatches) * 100), 2, 99),
+    "Queueing",
+    `${batchPrefix}: preparing ${filesCount} files (${sizeLabel})...`
+  );
+
+  const asyncFlow = await runAsyncUploadFlow(batchFiles);
+  if (asyncFlow.ok) {
+    return {
+      ok: true,
+      endpoint: asyncFlow.endpoint,
+      requestId: asyncFlow.requestId || "",
+      results: asyncFlow.results,
+    };
+  }
+
+  const syncFlow = await runSyncUploadFlow(batchFiles);
+  if (syncFlow.ok) {
+    return {
+      ok: true,
+      endpoint: syncFlow.endpoint,
+      requestId: syncFlow.requestId || "",
+      results: syncFlow.results,
+    };
+  }
+
+  const allFailures = [...asyncFlow.failures, ...syncFlow.failures];
+  const summary = allFailures.length ? allFailures[allFailures.length - 1] : `${batchPrefix}: no reachable endpoint.`;
+  return {
+    ok: false,
+    error: `${batchPrefix} failed. ${summary}`,
+  };
+}
+
 async function uploadImages() {
   if (!selectedFiles.length || isUploading) {
     return;
@@ -1245,23 +1338,46 @@ async function uploadImages() {
   let successful = false;
 
   try {
-    const asyncFlow = await runAsyncUploadFlow(selectedFiles);
-    if (asyncFlow.ok) {
-      applySuccessfulResults(asyncFlow.endpoint, asyncFlow.results, asyncFlow.requestId || "");
-      successful = true;
-      return;
+    const batches = buildUploadBatches(selectedFiles);
+    const totalFileCount = selectedFiles.length;
+    const totalSizeLabel = bytesToSize(totalBytes(selectedFiles));
+    let processedFileCount = 0;
+    const mergedResults = createEmptyResults();
+    let lastEndpoint = "";
+    let lastRequestId = "";
+
+    if (batches.length > 1) {
+      setStatus(
+        `Large batch detected. Processing ${totalFileCount} files in ${batches.length} batches (${MAX_BATCH_FILES} files or ${MAX_REQUEST_SIZE_MB}MB per request).`
+      );
+    } else {
+      setStatus(`Processing ${totalFileCount} file(s), total ${totalSizeLabel}...`);
     }
 
-    const syncFlow = await runSyncUploadFlow(selectedFiles);
-    if (syncFlow.ok) {
-      applySuccessfulResults(syncFlow.endpoint, syncFlow.results, syncFlow.requestId || "");
-      successful = true;
-      return;
+    for (let index = 0; index < batches.length; index += 1) {
+      const batchFiles = batches[index];
+      const batchResult = await runSingleBatchUpload(batchFiles, index + 1, batches.length);
+      if (!batchResult.ok) {
+        throw new Error(`${batchResult.error} Try again or reduce total batch size.`);
+      }
+
+      mergeResults(mergedResults, batchResult.results);
+      lastEndpoint = batchResult.endpoint || lastEndpoint;
+      lastRequestId = batchResult.requestId || lastRequestId;
+      processedFileCount += batchFiles.length;
+
+      const totalPercent = Math.round((processedFileCount / totalFileCount) * 100);
+      setProgress(
+        clamp(totalPercent, 5, 100),
+        batches.length > 1 ? `Batch ${index + 1}/${batches.length} complete` : "Completed",
+        `Processed ${processedFileCount}/${totalFileCount} files.`
+      );
     }
 
-    const allFailures = [...asyncFlow.failures, ...syncFlow.failures];
-    const summary = allFailures.length ? allFailures[allFailures.length - 1] : "No upload endpoint was reachable.";
-    throw new Error(summary);
+    const endpointLabel = batches.length > 1 ? `${lastEndpoint} (batched x${batches.length})` : lastEndpoint;
+    applySuccessfulResults(endpointLabel, mergedResults, lastRequestId);
+    successful = true;
+    return;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected upload failure.";
     showError(message);
