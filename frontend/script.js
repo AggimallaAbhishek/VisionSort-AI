@@ -67,9 +67,13 @@ const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 18 * 1000;
 const ASYNC_QUEUE_STALL_TIMEOUT_MS = 90 * 1000;
 const BATCH_RETRY_COUNT = 2;
 const BATCH_RETRY_DELAY_MS = 1200;
-const REQUEST_TIMEOUT_MS = 45 * 1000;
+const REQUEST_TIMEOUT_DEFAULT_MS = 75 * 1000;
+const REQUEST_TIMEOUT_BASE_MS = 90 * 1000;
+const REQUEST_TIMEOUT_PER_MB_MS = 6000;
+const REQUEST_TIMEOUT_MAX_MS = 8 * 60 * 1000;
 const JOB_STATUS_TIMEOUT_MS = 12 * 1000;
 const ZIP_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+const MAX_BATCH_AUTO_SPLIT_DEPTH = 2;
 const ENABLE_SYNC_FALLBACK = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 const dropZone = document.getElementById("dropZone");
@@ -344,7 +348,7 @@ function sleep(ms) {
   });
 }
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_DEFAULT_MS) {
   const controller = new AbortController();
   const timeoutHandle = window.setTimeout(() => controller.abort("timeout"), timeoutMs);
   try {
@@ -367,6 +371,17 @@ function formatElapsedDuration(ms) {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.round(seconds % 60);
   return `${minutes}m ${String(remainingSeconds).padStart(2, "0")}s`;
+}
+
+function computeUploadTimeoutMs(files) {
+  const batchSizeMb = totalBytes(files) / (1024 * 1024);
+  const computed = REQUEST_TIMEOUT_BASE_MS + batchSizeMb * REQUEST_TIMEOUT_PER_MB_MS;
+  return clamp(Math.round(computed), REQUEST_TIMEOUT_DEFAULT_MS, REQUEST_TIMEOUT_MAX_MS);
+}
+
+function splitBatchIntoTwo(files) {
+  const mid = Math.ceil(files.length / 2);
+  return [files.slice(0, mid), files.slice(mid)];
 }
 
 function startAnalysisClock() {
@@ -1117,7 +1132,7 @@ async function getResponseErrorMessage(response) {
   return `Upload failed (${response.status}): ${snippet}${requestIdSuffix(responseRequestId)}`;
 }
 
-async function attemptUpload(endpoint, files) {
+async function attemptUpload(endpoint, files, timeoutMs = REQUEST_TIMEOUT_DEFAULT_MS) {
   try {
     const response = await fetchWithTimeout(
       endpoint,
@@ -1125,7 +1140,7 @@ async function attemptUpload(endpoint, files) {
         method: "POST",
         body: buildFormData(files),
       },
-      REQUEST_TIMEOUT_MS
+      timeoutMs
     );
     const requestId = response.headers.get("x-request-id") || "";
 
@@ -1343,12 +1358,12 @@ async function pollJobUntilDone(statusEndpointCandidates) {
   throw new Error(`Timed out while waiting for analysis. Last status error: ${lastError}`);
 }
 
-async function runAsyncUploadFlow(files) {
+async function runAsyncUploadFlow(files, timeoutMs) {
   const failures = [];
 
   for (const endpoint of API_ASYNC_UPLOAD_ENDPOINT_CANDIDATES) {
     setProgress(4, "Queueing", "Sending files to async analysis endpoint...");
-    const startResult = await attemptUpload(endpoint, files);
+    const startResult = await attemptUpload(endpoint, files, timeoutMs);
 
     if (!startResult.ok) {
       failures.push(`${endpoint} -> ${startResult.error}`);
@@ -1401,12 +1416,12 @@ async function runAsyncUploadFlow(files) {
   };
 }
 
-async function runSyncUploadFlow(files) {
+async function runSyncUploadFlow(files, timeoutMs) {
   const failures = [];
   startPseudoProgress();
 
   for (const endpoint of API_UPLOAD_ENDPOINT_CANDIDATES) {
-    const result = await attemptUpload(endpoint, files);
+    const result = await attemptUpload(endpoint, files, timeoutMs);
     if (result.ok) {
       stopPseudoProgress(100, "Analysis complete.");
       localStorage.setItem("visionsort_api_upload_endpoint", result.endpoint);
@@ -1455,16 +1470,18 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
   const batchPrefix = totalBatches > 1 ? `Batch ${batchIndex}/${totalBatches}` : "Batch 1/1";
   const filesCount = batchFiles.length;
   const sizeLabel = bytesToSize(totalBytes(batchFiles));
+  const timeoutMs = computeUploadTimeoutMs(batchFiles);
+  const timeoutSeconds = Math.round(timeoutMs / 1000);
   let lastSummary = `${batchPrefix}: no reachable endpoint.`;
 
   for (let attempt = 1; attempt <= BATCH_RETRY_COUNT; attempt += 1) {
     setProgress(
       clamp(Math.round(((batchIndex - 1) / totalBatches) * 100), 2, 99),
       "Queueing",
-      `${batchPrefix}: preparing ${filesCount} files (${sizeLabel})... attempt ${attempt}/${BATCH_RETRY_COUNT}`
+      `${batchPrefix}: preparing ${filesCount} files (${sizeLabel})... attempt ${attempt}/${BATCH_RETRY_COUNT}, timeout ${timeoutSeconds}s`
     );
 
-    const asyncFlow = await runAsyncUploadFlow(batchFiles);
+    const asyncFlow = await runAsyncUploadFlow(batchFiles, timeoutMs);
     if (asyncFlow.ok) {
       return {
         ok: true,
@@ -1475,7 +1492,7 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
     }
 
     if (ENABLE_SYNC_FALLBACK) {
-      const syncFlow = await runSyncUploadFlow(batchFiles);
+      const syncFlow = await runSyncUploadFlow(batchFiles, timeoutMs);
       if (syncFlow.ok) {
         return {
           ok: true,
@@ -1516,26 +1533,48 @@ async function uploadImages() {
   let successful = false;
 
   try {
-    const batches = buildUploadBatches(selectedFiles);
+    const initialBatches = buildUploadBatches(selectedFiles);
+    const pendingBatches = initialBatches.map((files) => ({ files, splitDepth: 0 }));
     const totalFileCount = selectedFiles.length;
     const totalSizeLabel = bytesToSize(totalBytes(selectedFiles));
     let processedFileCount = 0;
+    let completedBatches = 0;
     const mergedResults = createEmptyResults();
     let lastEndpoint = "";
     let lastRequestId = "";
 
-    if (batches.length > 1) {
+    if (initialBatches.length > 1) {
       setStatus(
-        `Large batch detected. Processing ${totalFileCount} files in ${batches.length} batches (${MAX_BATCH_FILES} files or ${MAX_REQUEST_SIZE_MB}MB per request).`
+        `Large batch detected. Processing ${totalFileCount} files in ${initialBatches.length} batches (${MAX_BATCH_FILES} files or ${MAX_REQUEST_SIZE_MB}MB per request).`
       );
     } else {
       setStatus(`Processing ${totalFileCount} file(s), total ${totalSizeLabel}...`);
     }
 
-    for (let index = 0; index < batches.length; index += 1) {
-      const batchFiles = batches[index];
-      const batchResult = await runSingleBatchUpload(batchFiles, index + 1, batches.length);
+    while (pendingBatches.length > 0) {
+      const totalBatches = completedBatches + pendingBatches.length;
+      const currentBatch = pendingBatches.shift();
+      if (!currentBatch) {
+        break;
+      }
+
+      const batchFiles = currentBatch.files;
+      const batchResult = await runSingleBatchUpload(batchFiles, completedBatches + 1, totalBatches);
       if (!batchResult.ok) {
+        if (batchFiles.length > 1 && currentBatch.splitDepth < MAX_BATCH_AUTO_SPLIT_DEPTH) {
+          const [leftHalf, rightHalf] = splitBatchIntoTwo(batchFiles);
+          if (rightHalf.length > 0) {
+            const nextDepth = currentBatch.splitDepth + 1;
+            pendingBatches.unshift(
+              { files: rightHalf, splitDepth: nextDepth },
+              { files: leftHalf, splitDepth: nextDepth }
+            );
+            setStatus(
+              `Network issue on a large batch. Auto-splitting into ${leftHalf.length} + ${rightHalf.length} files and retrying.`
+            );
+            continue;
+          }
+        }
         throw new Error(`${batchResult.error} Try again or reduce total batch size.`);
       }
 
@@ -1543,16 +1582,17 @@ async function uploadImages() {
       lastEndpoint = batchResult.endpoint || lastEndpoint;
       lastRequestId = batchResult.requestId || lastRequestId;
       processedFileCount += batchFiles.length;
+      completedBatches += 1;
 
       const totalPercent = Math.round((processedFileCount / totalFileCount) * 100);
       setProgress(
         clamp(totalPercent, 5, 100),
-        batches.length > 1 ? `Batch ${index + 1}/${batches.length} complete` : "Completed",
+        totalBatches > 1 ? `Batch ${completedBatches}/${totalBatches} complete` : "Completed",
         `Processed ${processedFileCount}/${totalFileCount} files.`
       );
     }
 
-    const endpointLabel = batches.length > 1 ? `${lastEndpoint} (batched x${batches.length})` : lastEndpoint;
+    const endpointLabel = completedBatches > 1 ? `${lastEndpoint} (batched x${completedBatches})` : lastEndpoint;
     applySuccessfulResults(endpointLabel, mergedResults, lastRequestId);
     successful = true;
     return;

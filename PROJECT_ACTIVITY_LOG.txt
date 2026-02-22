@@ -261,3 +261,7 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Backend endpoints: /download/zip and /api/download/zip generate category ZIPs from S3 paths in results payload.
 - ZIP limits enforced by MAX_ZIP_ITEMS and MAX_ZIP_SOURCE_BYTES_MB.
 - Frontend ZIP download now tries server endpoint first and falls back to browser JSZip only when needed.
+[2026-02-23 00:34:04 IST (+0530)]
+- Fixed uploader failure mode: adaptive upload timeout based on batch size + automatic batch splitting on repeated network failures.
+- Frontend upload now retries with smaller sub-batches (depth-limited) instead of hard failing entire run.
+- Increased default request timeout envelope and kept async-first strategy; cache-busted frontend script version.
