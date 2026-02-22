@@ -41,15 +41,19 @@ DUPLICATE_HASH_DISTANCE = int(os.getenv("DUPLICATE_HASH_DISTANCE", "5"))
 MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "1024"))
 PREVIEW_MAX_WIDTH = int(os.getenv("PREVIEW_MAX_WIDTH", "640"))
 PREVIEW_JPEG_QUALITY = max(30, min(95, int(os.getenv("PREVIEW_JPEG_QUALITY", "70"))))
+INCLUDE_PREVIEW_DATA_URL = os.getenv("INCLUDE_PREVIEW_DATA_URL", "true").lower() == "true"
+PREVIEW_INLINE_MAX_FILES = max(1, int(os.getenv("PREVIEW_INLINE_MAX_FILES", "20")))
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_FILES = int(os.getenv("MAX_FILES", "50"))
 ENABLE_AI_LABEL = os.getenv("ENABLE_AI_LABEL", "true").lower() == "true"
+AI_DISABLE_ABOVE_FILES = max(0, int(os.getenv("AI_DISABLE_ABOVE_FILES", "24")))
 DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "anonymous")
 RENAMED_FILE_PREFIX = (
     re.sub(r"[^a-zA-Z0-9_-]", "_", os.getenv("RENAMED_FILE_PREFIX", "vin_img").strip()) or "vin_img"
 )
 AI_ASSISTED_STATUS = os.getenv("AI_ASSISTED_STATUS", "true").lower() == "true"
+AI_FASTPATH_SKIP_STRONG_RULES = os.getenv("AI_FASTPATH_SKIP_STRONG_RULES", "true").lower() == "true"
 AI_MIN_CONFIDENCE = max(0.0, min(1.0, float(os.getenv("AI_MIN_CONFIDENCE", "0.70"))))
 AI_PROMOTE_GOOD_CONFIDENCE = max(0.0, min(1.0, float(os.getenv("AI_PROMOTE_GOOD_CONFIDENCE", "0.90"))))
 AI_BORDERLINE_FACTOR = max(0.5, min(1.2, float(os.getenv("AI_BORDERLINE_FACTOR", "0.90"))))
@@ -285,6 +289,8 @@ def root() -> Dict[str, Any]:
             "max_image_width": MAX_IMAGE_WIDTH,
             "preview_max_width": PREVIEW_MAX_WIDTH,
             "preview_jpeg_quality": PREVIEW_JPEG_QUALITY,
+            "include_preview_data_url": INCLUDE_PREVIEW_DATA_URL,
+            "preview_inline_max_files": PREVIEW_INLINE_MAX_FILES,
             "renamed_file_prefix": RENAMED_FILE_PREFIX,
             "rate_limit_max_requests": RATE_LIMIT_MAX_REQUESTS,
             "rate_limit_window_seconds": RATE_LIMIT_WINDOW_SECONDS,
@@ -292,6 +298,8 @@ def root() -> Dict[str, Any]:
         "ai": {
             "enabled": ENABLE_AI_LABEL,
             "assisted_status": AI_ASSISTED_STATUS,
+            "fastpath_skip_strong_rules": AI_FASTPATH_SKIP_STRONG_RULES,
+            "disable_above_files": AI_DISABLE_ABOVE_FILES,
             "min_confidence": AI_MIN_CONFIDENCE,
             "promote_good_confidence": AI_PROMOTE_GOOD_CONFIDENCE,
         },
@@ -452,7 +460,12 @@ def choose_final_status(
     """Choose final status by combining deterministic rules with high-confidence AI."""
     rule_status = choose_rule_status(blur_score, brightness_level, duplicate)
 
-    if not AI_ASSISTED_STATUS or ai_label in {"disabled", "model_unavailable"}:
+    if not AI_ASSISTED_STATUS or ai_label in {
+        "disabled",
+        "model_unavailable",
+        "disabled_large_batch",
+        "skipped_fastpath",
+    }:
         return rule_status, "rule"
     if ai_confidence < AI_MIN_CONFIDENCE:
         return rule_status, "rule"
@@ -477,6 +490,22 @@ def choose_final_status(
             return "good", "ai_override"
 
     return rule_status, "rule"
+
+
+def should_skip_ai_inference(*, rule_status: str, blur_score: float, brightness_value: float, duplicate: bool) -> bool:
+    """Return True when AI inference can be safely skipped for performance."""
+    if duplicate:
+        return True
+    if not AI_FASTPATH_SKIP_STRONG_RULES:
+        return False
+
+    if rule_status == "blurry" and blur_score < BLUR_THRESHOLD * AI_BORDERLINE_FACTOR:
+        return True
+    if rule_status == "dark" and brightness_value < DARK_PROMOTE_MIN_BRIGHTNESS:
+        return True
+    if rule_status == "overexposed" and brightness_value > OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS:
+        return True
+    return False
 
 
 def clamp_percent(value: float) -> float:
@@ -530,7 +559,7 @@ def build_item_payload(
     ai_confidence: float,
     final_status: str,
     status_source: str,
-    preview_data_url: str,
+    preview_data_url: str | None,
     storage_path: str | None,
     processed_storage_path: str | None,
     storage_folder: str,
@@ -731,6 +760,10 @@ def process_upload_payloads(
     persistence_tasks: List[Tuple[Future[Tuple[str | None, str | None]], Dict[str, Any], str]] = []
     processed_count = 0
     total_files = len(payloads)
+    valid_file_count = sum(1 for payload in payloads if not payload.get("validation_error"))
+    include_inline_preview = INCLUDE_PREVIEW_DATA_URL and valid_file_count <= PREVIEW_INLINE_MAX_FILES
+    ai_disabled_for_batch = AI_DISABLE_ABOVE_FILES > 0 and valid_file_count > AI_DISABLE_ABOVE_FILES
+    s3_persistence_enabled = aws_service.s3_enabled
     request_batch_id = f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     object_date_prefix = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
@@ -747,7 +780,6 @@ def process_upload_payloads(
             image = decode_image(raw_bytes)
             resized_image = resize_image(image, MAX_IMAGE_WIDTH)
             pil_image = bgr_to_pil(resized_image)
-            preview_image = resize_image(resized_image, PREVIEW_MAX_WIDTH)
 
             blur_score = detect_blur(resized_image)
             blur_quality_score = calculate_blur_quality_score(blur_score)
@@ -755,7 +787,18 @@ def process_upload_payloads(
             brightness_score = calculate_brightness_quality_score(brightness_value)
             brightness_level = analyze_brightness(resized_image)
             duplicate = is_duplicate(pil_image, seen_hashes, threshold=DUPLICATE_HASH_DISTANCE)
-            ai_label, ai_confidence = predict_quality_label(pil_image)
+            rule_status = choose_rule_status(blur_score, brightness_level, duplicate)
+            if ai_disabled_for_batch:
+                ai_label, ai_confidence = "disabled_large_batch", 0.0
+            elif should_skip_ai_inference(
+                rule_status=rule_status,
+                blur_score=blur_score,
+                brightness_value=brightness_value,
+                duplicate=duplicate,
+            ):
+                ai_label, ai_confidence = "skipped_fastpath", 0.0
+            else:
+                ai_label, ai_confidence = predict_quality_label(pil_image)
             final_status, status_source = choose_final_status(
                 blur_score=blur_score,
                 brightness_level=brightness_level,
@@ -770,8 +813,13 @@ def process_upload_payloads(
             renamed_file_name = f"{RENAMED_FILE_PREFIX}{processed_count}{renamed_extension}"
             storage_folder = f"{final_status}/{object_date_prefix}/{request_batch_id}"
 
-            preview_bytes = encode_preview_jpeg(preview_image, quality=PREVIEW_JPEG_QUALITY)
-            preview_data_url = f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('utf-8')}"
+            preview_bytes = b""
+            preview_data_url = None
+            if include_inline_preview or s3_persistence_enabled:
+                preview_image = resize_image(resized_image, PREVIEW_MAX_WIDTH)
+                preview_bytes = encode_preview_jpeg(preview_image, quality=PREVIEW_JPEG_QUALITY)
+                if include_inline_preview:
+                    preview_data_url = f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('utf-8')}"
             item = build_item_payload(
                 original_file_name=original_file_name,
                 renamed_file_name=renamed_file_name,
@@ -790,26 +838,28 @@ def process_upload_payloads(
                 processed_storage_path=None,
             )
             results[final_status].append(item)
-            metadata_rows.append(
-                build_metadata_row(renamed_file_name, blur_score, brightness_level, ai_label, final_status)
-            )
-
-            persistence_tasks.append(
-                (
-                    persist_executor.submit(
-                        persist_artifacts,
-                        renamed_file_name=renamed_file_name,
-                        final_status=final_status,
-                        request_batch_id=request_batch_id,
-                        object_date_prefix=object_date_prefix,
-                        content_type=content_type,
-                        raw_bytes=raw_bytes,
-                        preview_bytes=preview_bytes,
-                    ),
-                    item,
-                    renamed_file_name,
+            if aws_service.db_enabled:
+                metadata_rows.append(
+                    build_metadata_row(renamed_file_name, blur_score, brightness_level, ai_label, final_status)
                 )
-            )
+
+            if s3_persistence_enabled:
+                persistence_tasks.append(
+                    (
+                        persist_executor.submit(
+                            persist_artifacts,
+                            renamed_file_name=renamed_file_name,
+                            final_status=final_status,
+                            request_batch_id=request_batch_id,
+                            object_date_prefix=object_date_prefix,
+                            content_type=content_type,
+                            raw_bytes=raw_bytes,
+                            preview_bytes=preview_bytes,
+                        ),
+                        item,
+                        renamed_file_name,
+                    )
+                )
 
         except ValueError as exc:
             logger.warning("Skipping invalid image %s: %s", original_file_name, exc)
@@ -853,7 +903,7 @@ def process_upload_payloads(
                     file_name,
                 )
 
-    if metadata_rows:
+    if metadata_rows and aws_service.db_enabled:
         try:
             aws_service.insert_many_image_metadata(metadata_rows)
         except Exception as exc:

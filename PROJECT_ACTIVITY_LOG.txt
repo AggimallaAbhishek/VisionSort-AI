@@ -249,3 +249,9 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - backend source compile checks passed (`compile(...)` for core Python files)
   - Added env: `PERSIST_OVERALL_TIMEOUT_SECONDS=90`
   Status: done
+[2026-02-22 15:12:35 IST (+0530)]
+- Optimization pass (core backend + frontend) for faster large-batch processing.
+- Backend: optimized batch gating using valid file count; AI inference auto-skip/disable paths preserved; preview generation now conditional (inline preview and/or S3 persistence only); avoids unnecessary DB/S3 task setup when service disabled.
+- Frontend: added request/job polling timeouts, improved production API endpoint prioritization (direct Render first when meta base is relative), and limited sync fallback to localhost to avoid long blocking in production.
+- UI stability: added missing preview placeholder styling and tightened progress fill containment.
+- Config/docs: updated backend/.env.example, render.yaml, README, and cache-busted frontend script reference.

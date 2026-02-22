@@ -765,6 +765,7 @@ body {
 .card-image-wrap {
   position: relative;
   min-height: 190px;
+  overflow: hidden;
 }
 
 .card-image-wrap img {
@@ -773,6 +774,25 @@ body {
   min-height: 190px;
   object-fit: cover;
   display: block;
+}
+
+.image-placeholder {
+  width: 100%;
+  min-height: 190px;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 20px 14px;
+  color: #9bb1de;
+  font-size: 0.82rem;
+  font-family: "Manrope", sans-serif;
+  background: linear-gradient(180deg, rgba(24, 38, 76, 0.92), rgba(15, 25, 54, 0.9));
+}
+
+.image-placeholder span {
+  max-width: 24ch;
+  line-height: 1.4;
 }
 
 .status-badge {
@@ -876,6 +896,7 @@ body {
   max-width: 100%;
   min-width: 0;
   height: 100%;
+  box-sizing: border-box;
   transition: width 0.28s ease;
 }
 

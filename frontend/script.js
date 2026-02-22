@@ -67,6 +67,9 @@ const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 18 * 1000;
 const ASYNC_QUEUE_STALL_TIMEOUT_MS = 90 * 1000;
 const BATCH_RETRY_COUNT = 2;
 const BATCH_RETRY_DELAY_MS = 1200;
+const REQUEST_TIMEOUT_MS = 45 * 1000;
+const JOB_STATUS_TIMEOUT_MS = 12 * 1000;
+const ENABLE_SYNC_FALLBACK = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 const dropZone = document.getElementById("dropZone");
 const imageInput = document.getElementById("imageInput");
@@ -137,6 +140,9 @@ function buildApiCandidates() {
   if (configuredApiBase) {
     if (isLocalHost && isRelativePath(configuredApiBase)) {
       candidates.push("http://localhost:10000");
+    } else if (!isLocalHost && isRelativePath(configuredApiBase)) {
+      candidates.push(DEFAULT_DEPLOYED_API_BASE_URL);
+      candidates.push(configuredApiBase);
     } else {
       candidates.push(configuredApiBase);
     }
@@ -312,6 +318,19 @@ function sleep(ms) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutHandle = window.setTimeout(() => controller.abort("timeout"), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutHandle);
+  }
 }
 
 function formatElapsedDuration(ms) {
@@ -646,13 +665,17 @@ function buildResultCardElement(item, categoryKey) {
   const blurRaw = Number(item.blur_score || 0);
   const brightnessRaw = Number(item.brightness_value);
   const brightnessRawLabel = Number.isFinite(brightnessRaw) ? `${brightnessRaw.toFixed(1)}/255` : "n/a";
-  const imageSource = item.preview_data_url || "";
+  const imageSource = typeof item.preview_data_url === "string" ? item.preview_data_url : "";
+  const hasInlinePreview = imageSource.startsWith("data:image/");
+  const imageMarkup = hasInlinePreview
+    ? `<img src="${imageSource}" alt="${safeName}" loading="lazy" />`
+    : `<div class="image-placeholder"><span>Preview omitted for faster batch processing</span></div>`;
 
   const card = document.createElement("article");
   card.className = "result-card";
   card.innerHTML = `
     <div class="card-image-wrap">
-      <img src="${imageSource}" alt="${safeName}" loading="lazy" />
+      ${imageMarkup}
       <span class="status-badge ${safeCategory}">${safeCategory}</span>
     </div>
     <div class="card-body">
@@ -976,10 +999,14 @@ async function getResponseErrorMessage(response) {
 
 async function attemptUpload(endpoint, files) {
   try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      body: buildFormData(files),
-    });
+    const response = await fetchWithTimeout(
+      endpoint,
+      {
+        method: "POST",
+        body: buildFormData(files),
+      },
+      REQUEST_TIMEOUT_MS
+    );
     const requestId = response.headers.get("x-request-id") || "";
 
     if (!response.ok) {
@@ -1002,6 +1029,9 @@ async function attemptUpload(endpoint, files) {
     };
   } catch (error) {
     let message = error instanceof Error ? error.message : "Unexpected network error.";
+    if (error instanceof DOMException && error.name === "AbortError") {
+      message = "Request timed out while waiting for backend response.";
+    }
     if (message === "Failed to fetch") {
       message = "Failed to fetch (network/CORS/request size/backend restart).";
     }
@@ -1017,10 +1047,14 @@ async function attemptUpload(endpoint, files) {
 
 async function fetchJobSnapshot(endpoint) {
   try {
-    const response = await fetch(endpoint, {
-      method: "GET",
-      cache: "no-store",
-    });
+    const response = await fetchWithTimeout(
+      endpoint,
+      {
+        method: "GET",
+        cache: "no-store",
+      },
+      JOB_STATUS_TIMEOUT_MS
+    );
     const requestId = response.headers.get("x-request-id") || "";
 
     if (!response.ok) {
@@ -1040,6 +1074,14 @@ async function fetchJobSnapshot(endpoint) {
       data: payload,
     };
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return {
+        ok: false,
+        endpoint,
+        requestId: "",
+        error: "Job status request timed out.",
+      };
+    }
     return {
       ok: false,
       endpoint,
@@ -1312,18 +1354,23 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
       };
     }
 
-    const syncFlow = await runSyncUploadFlow(batchFiles);
-    if (syncFlow.ok) {
-      return {
-        ok: true,
-        endpoint: syncFlow.endpoint,
-        requestId: syncFlow.requestId || "",
-        results: syncFlow.results,
-      };
-    }
+    if (ENABLE_SYNC_FALLBACK) {
+      const syncFlow = await runSyncUploadFlow(batchFiles);
+      if (syncFlow.ok) {
+        return {
+          ok: true,
+          endpoint: syncFlow.endpoint,
+          requestId: syncFlow.requestId || "",
+          results: syncFlow.results,
+        };
+      }
 
-    const allFailures = [...asyncFlow.failures, ...syncFlow.failures];
-    lastSummary = allFailures.length ? allFailures[allFailures.length - 1] : lastSummary;
+      const allFailures = [...asyncFlow.failures, ...syncFlow.failures];
+      lastSummary = allFailures.length ? allFailures[allFailures.length - 1] : lastSummary;
+    } else {
+      const allFailures = [...asyncFlow.failures];
+      lastSummary = allFailures.length ? allFailures[allFailures.length - 1] : lastSummary;
+    }
 
     if (attempt < BATCH_RETRY_COUNT) {
       setStatus(`${batchPrefix}: network issue detected, retrying...`);

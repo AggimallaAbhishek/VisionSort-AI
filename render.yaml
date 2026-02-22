@@ -39,12 +39,34 @@ services:
         value: "640"
       - key: PREVIEW_JPEG_QUALITY
         value: "70"
+      - key: INCLUDE_PREVIEW_DATA_URL
+        value: "true"
+      - key: PREVIEW_INLINE_MAX_FILES
+        value: "20"
       - key: MAX_FILE_SIZE_MB
         value: "100"
       - key: MAX_FILES
         value: "50"
+      - key: RENAMED_FILE_PREFIX
+        value: "vin_img"
       - key: ENABLE_AI_LABEL
         value: "true"
+      - key: AI_ASSISTED_STATUS
+        value: "true"
+      - key: AI_FASTPATH_SKIP_STRONG_RULES
+        value: "true"
+      - key: AI_DISABLE_ABOVE_FILES
+        value: "24"
+      - key: AI_MIN_CONFIDENCE
+        value: "0.70"
+      - key: AI_PROMOTE_GOOD_CONFIDENCE
+        value: "0.90"
+      - key: AI_BORDERLINE_FACTOR
+        value: "0.90"
+      - key: DARK_PROMOTE_MIN_BRIGHTNESS
+        value: "45"
+      - key: OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS
+        value: "210"
       - key: PERSIST_WORKERS
         value: "6"
       - key: UPLOAD_JOB_WORKERS
