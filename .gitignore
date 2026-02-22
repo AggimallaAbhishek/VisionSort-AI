@@ -14,3 +14,8 @@ backend/.env
 
 # OS/editor
 .DS_Store
+
+# Local datasets/artifacts (keep on disk, don't track in git)
+training_data/
+images/
+backend/model/*.pth
