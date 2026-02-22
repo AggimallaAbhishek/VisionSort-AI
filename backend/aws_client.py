@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, Literal, Optional
+from typing import Any, Dict, Iterator, Literal, Optional, Tuple
 
 import boto3
 import psycopg2
@@ -13,6 +14,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger(__name__)
+S3_URI_PATTERN = re.compile(r"^s3://([^/]+)/(.+)$")
 
 
 def _read_int_env(name: str, default: int, min_value: int, max_value: int) -> int:
@@ -117,6 +119,42 @@ class AWSService:
             raise RuntimeError(f"S3 upload failed for bucket={bucket_name}, key={path}") from exc
 
         return f"s3://{bucket_name}/{path}"
+
+    def parse_s3_uri(self, s3_uri: str) -> Tuple[str, str]:
+        """Parse an S3 URI into (bucket, key)."""
+        match = S3_URI_PATTERN.match((s3_uri or "").strip())
+        if not match:
+            raise ValueError(f"Invalid S3 URI: {s3_uri}")
+        bucket, key = match.group(1), match.group(2)
+        if not bucket or not key:
+            raise ValueError(f"Invalid S3 URI: {s3_uri}")
+        return bucket, key
+
+    def download_s3_uri(self, s3_uri: str) -> bytes:
+        """Download object bytes from a full `s3://bucket/key` URI."""
+        if not self.s3_enabled or not self.s3_client:
+            raise RuntimeError("S3 client is not configured.")
+
+        bucket, key = self.parse_s3_uri(s3_uri)
+        allowed_buckets = {self.uploads_bucket, self.processed_bucket}
+        if bucket not in allowed_buckets:
+            raise RuntimeError(f"S3 bucket not allowed for download: {bucket}")
+
+        body = None
+        try:
+            response = self.s3_client.get_object(Bucket=bucket, Key=key)
+            body = response.get("Body")
+            if body is None:
+                raise RuntimeError(f"Missing response body for S3 object: {s3_uri}")
+            return body.read()
+        except (BotoCoreError, ClientError) as exc:
+            raise RuntimeError(f"S3 download failed for {s3_uri}") from exc
+        finally:
+            if body is not None:
+                try:
+                    body.close()
+                except Exception:
+                    pass
 
     def insert_image_metadata(self, row: Dict[str, Any]) -> None:
         """Insert metadata row into the `images` table."""

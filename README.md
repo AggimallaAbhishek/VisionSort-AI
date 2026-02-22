@@ -126,6 +126,27 @@ Each item includes:
 - `storage_path` (original object)
 - `processed_storage_path` (resized object)
 
+### `POST /download/zip`
+Builds a server-side ZIP from persisted S3 objects (recommended for large batches).
+
+Request body:
+
+```json
+{
+  "categories": ["good", "blurry"],
+  "source": "processed",
+  "zip_name": "visionsort_folders.zip",
+  "results": {
+    "good": [{ "renamed_file_name": "vin_img1.jpg", "processed_storage_path": "s3://bucket/key" }]
+  }
+}
+```
+
+Notes:
+- `source` supports `processed` (default) or `original`.
+- ZIP is returned as `application/zip` with `Content-Disposition: attachment`.
+- Limits can be tuned with `MAX_ZIP_ITEMS` and `MAX_ZIP_SOURCE_BYTES_MB`.
+
 ## Frontend Setup
 
 Serve locally:
@@ -251,3 +272,4 @@ Optional AI + rule fusion knobs:
   - `visionsort-max-request-size-mb` (default `35`)
   - `visionsort-max-batch-files` (default `10`)
 - Frontend now uses request timeouts and retries so stalled batches fail fast and retry automatically.
+- ZIP download uses server-side generation from S3 first, with browser ZIP fallback when server ZIP is unavailable.

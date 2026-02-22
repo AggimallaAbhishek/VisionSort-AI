@@ -255,3 +255,9 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Frontend: added request/job polling timeouts, improved production API endpoint prioritization (direct Render first when meta base is relative), and limited sync fallback to localhost to avoid long blocking in production.
 - UI stability: added missing preview placeholder styling and tightened progress fill containment.
 - Config/docs: updated backend/.env.example, render.yaml, README, and cache-busted frontend script reference.
+[2026-02-22 16:17:16 IST (+0530)]
+- Server-side ZIP implementation: corrected entry with exact timestamp.
+- AWSService now supports download_s3_uri (s3://bucket/key) with bucket allowlist checks.
+- Backend endpoints: /download/zip and /api/download/zip generate category ZIPs from S3 paths in results payload.
+- ZIP limits enforced by MAX_ZIP_ITEMS and MAX_ZIP_SOURCE_BYTES_MB.
+- Frontend ZIP download now tries server endpoint first and falls back to browser JSZip only when needed.

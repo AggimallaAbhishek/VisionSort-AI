@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from collections import deque
 from contextvars import ContextVar
 from io import BytesIO
@@ -16,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import cv2
 import numpy as np
@@ -23,7 +25,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from PIL import Image
 
 from aws_client import AWSService
@@ -68,6 +70,11 @@ PERSIST_TASK_TIMEOUT_SECONDS = max(2, int(os.getenv("PERSIST_TASK_TIMEOUT_SECOND
 PERSIST_OVERALL_TIMEOUT_SECONDS = max(15, int(os.getenv("PERSIST_OVERALL_TIMEOUT_SECONDS", "90")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
 RATE_LIMIT_MAX_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "30")))
+MAX_ZIP_ITEMS = max(1, int(os.getenv("MAX_ZIP_ITEMS", "400")))
+MAX_ZIP_SOURCE_BYTES_MB = max(10, int(os.getenv("MAX_ZIP_SOURCE_BYTES_MB", "500")))
+MAX_ZIP_SOURCE_BYTES = MAX_ZIP_SOURCE_BYTES_MB * 1024 * 1024
+CATEGORY_KEYS = ("good", "blurry", "dark", "overexposed", "duplicates")
+ZIP_SOURCES = {"processed", "original"}
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg",
@@ -136,7 +143,14 @@ rate_limit_lock = Lock()
 request_id_ctx: ContextVar[str] = ContextVar("request_id", default="")
 
 REQUEST_ID_HEADER = "X-Request-ID"
-RATE_LIMITED_PATHS = {"/upload", "/api/upload", "/upload/async", "/api/upload/async"}
+RATE_LIMITED_PATHS = {
+    "/upload",
+    "/api/upload",
+    "/upload/async",
+    "/api/upload/async",
+    "/download/zip",
+    "/api/download/zip",
+}
 HTTP_ERROR_CODE_MAP = {
     400: "BAD_REQUEST",
     401: "UNAUTHORIZED",
@@ -291,6 +305,8 @@ def root() -> Dict[str, Any]:
             "preview_jpeg_quality": PREVIEW_JPEG_QUALITY,
             "include_preview_data_url": INCLUDE_PREVIEW_DATA_URL,
             "preview_inline_max_files": PREVIEW_INLINE_MAX_FILES,
+            "max_zip_items": MAX_ZIP_ITEMS,
+            "max_zip_source_bytes_mb": MAX_ZIP_SOURCE_BYTES_MB,
             "renamed_file_prefix": RENAMED_FILE_PREFIX,
             "rate_limit_max_requests": RATE_LIMIT_MAX_REQUESTS,
             "rate_limit_window_seconds": RATE_LIMIT_WINDOW_SECONDS,
@@ -375,6 +391,41 @@ def sanitize_filename(filename: str) -> str:
     """Sanitize filename for safer storage keys."""
     clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename)
     return clean_name or f"image_{uuid.uuid4().hex}.jpg"
+
+
+def sanitize_archive_filename(filename: str, fallback: str) -> str:
+    """Sanitize archive filenames and prevent zip path traversal."""
+    original = (filename or "").strip()
+    base_name = Path(original).name  # strip any path components
+    clean_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", base_name)
+    clean_name = clean_name.strip("._")
+    if not clean_name:
+        clean_name = fallback
+
+    stem = Path(clean_name).stem[:100] or Path(fallback).stem or "file"
+    ext = Path(clean_name).suffix[:12]
+    if not ext:
+        ext = Path(fallback).suffix or ".jpg"
+    return f"{stem}{ext}"
+
+
+def normalize_zip_categories(categories: Any, results: Dict[str, Any]) -> List[str]:
+    """Normalize user-requested categories for server-side ZIP generation."""
+    if not categories:
+        return [category for category in CATEGORY_KEYS if isinstance(results.get(category), list)]
+
+    if not isinstance(categories, list):
+        raise HTTPException(status_code=400, detail="`categories` must be a list of category names.")
+
+    normalized: List[str] = []
+    for value in categories:
+        category = str(value or "").strip().lower()
+        if category in CATEGORY_KEYS and category not in normalized:
+            normalized.append(category)
+
+    if not normalized:
+        raise HTTPException(status_code=400, detail="No valid categories requested for ZIP download.")
+    return normalized
 
 
 def resolve_content_type(upload: UploadFile, filename: str) -> Optional[str]:
@@ -641,13 +692,7 @@ def predict_quality_label(image: Image.Image) -> Tuple[str, float]:
 
 def build_results_template() -> Dict[str, List[Dict[str, Any]]]:
     """Create an empty response template for all categories."""
-    return {
-        "good": [],
-        "blurry": [],
-        "dark": [],
-        "overexposed": [],
-        "duplicates": [],
-    }
+    return {category: [] for category in CATEGORY_KEYS}
 
 
 def persist_artifacts(
@@ -1064,6 +1109,142 @@ async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
     results = process_upload_payloads(payloads)
     results["request_id"] = current_request_id()
     return results
+
+
+@app.post("/download/zip")
+@app.post("/api/download/zip")
+async def download_results_zip(request: Request) -> Response:
+    """Build and return a ZIP file from persisted S3 objects in analysis results."""
+    if not aws_service.s3_enabled:
+        raise HTTPException(status_code=503, detail="S3 is not configured for ZIP downloads.")
+
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+
+    results = payload.get("results")
+    if not isinstance(results, dict):
+        raise HTTPException(status_code=400, detail="`results` object is required in request payload.")
+
+    categories = normalize_zip_categories(payload.get("categories"), results)
+    source = str(payload.get("source", "processed")).strip().lower()
+    if source not in ZIP_SOURCES:
+        raise HTTPException(status_code=400, detail=f"`source` must be one of: {', '.join(sorted(ZIP_SOURCES))}.")
+
+    include_manifest = bool(payload.get("include_manifest", True))
+    requested_zip_name = str(payload.get("zip_name", "visionsort_folders")).strip()
+    requested_zip_name = sanitize_archive_filename(requested_zip_name, "visionsort_folders.zip")
+    zip_base_name = requested_zip_name[:-4] if requested_zip_name.lower().endswith(".zip") else requested_zip_name
+    zip_base_name = zip_base_name or "visionsort_folders"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    download_file_name = f"{zip_base_name}_{timestamp}.zip"
+
+    downloaded_count = 0
+    scanned_item_count = 0
+    downloaded_source_bytes = 0
+    archive_names: set[str] = set()
+    manifest: Dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "request_id": current_request_id(),
+        "source": source,
+        "categories": {},
+        "limits": {
+            "max_zip_items": MAX_ZIP_ITEMS,
+            "max_source_bytes_mb": MAX_ZIP_SOURCE_BYTES_MB,
+        },
+    }
+    source_field = "processed_storage_path" if source == "processed" else "storage_path"
+
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, mode="w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
+        for category in categories:
+            raw_items = results.get(category, [])
+            if not isinstance(raw_items, list):
+                continue
+
+            category_manifest = {"requested": len(raw_items), "downloaded": 0, "skipped": []}
+            manifest["categories"][category] = category_manifest
+
+            if not raw_items:
+                archive.writestr(f"{category}/README.txt", "No analyzed images in this category.")
+                continue
+
+            for index, raw_item in enumerate(raw_items, start=1):
+                scanned_item_count += 1
+                if scanned_item_count > MAX_ZIP_ITEMS:
+                    category_manifest["skipped"].append(
+                        {
+                            "index": index,
+                            "reason": f"Exceeded max ZIP items limit ({MAX_ZIP_ITEMS}).",
+                        }
+                    )
+                    continue
+
+                if not isinstance(raw_item, dict):
+                    category_manifest["skipped"].append({"index": index, "reason": "Invalid result item payload."})
+                    continue
+
+                s3_uri = str(raw_item.get(source_field) or "").strip()
+                if not s3_uri:
+                    category_manifest["skipped"].append(
+                        {"index": index, "reason": f"Missing `{source_field}` in result item."}
+                    )
+                    continue
+
+                try:
+                    object_bytes = aws_service.download_s3_uri(s3_uri)
+                except Exception as exc:
+                    logger.warning("ZIP download skipped for %s (%s): %s", category, s3_uri, exc)
+                    category_manifest["skipped"].append(
+                        {"index": index, "reason": f"Unable to download source object: {s3_uri}"}
+                    )
+                    continue
+
+                downloaded_source_bytes += len(object_bytes)
+                if downloaded_source_bytes > MAX_ZIP_SOURCE_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"ZIP source size exceeded limit of {MAX_ZIP_SOURCE_BYTES_MB} MB. "
+                            "Reduce selected images and retry."
+                        ),
+                    )
+
+                original_name = str(raw_item.get("renamed_file_name") or raw_item.get("file_name") or "").strip()
+                fallback_name = f"{category}_{index:03d}.jpg"
+                archive_name = sanitize_archive_filename(original_name, fallback_name)
+                archive_path = f"{category}/{archive_name}"
+
+                suffix = 1
+                while archive_path in archive_names:
+                    stem = Path(archive_name).stem
+                    ext = Path(archive_name).suffix or ".jpg"
+                    archive_name = sanitize_archive_filename(f"{stem}_{suffix}{ext}", fallback_name)
+                    archive_path = f"{category}/{archive_name}"
+                    suffix += 1
+
+                archive_names.add(archive_path)
+                archive.writestr(archive_path, object_bytes)
+                downloaded_count += 1
+                category_manifest["downloaded"] += 1
+
+        if include_manifest:
+            manifest["downloaded_files"] = downloaded_count
+            archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    if downloaded_count == 0:
+        raise HTTPException(status_code=400, detail="No downloadable S3 objects found in the provided results.")
+
+    zip_buffer.seek(0)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{download_file_name}"',
+        REQUEST_ID_HEADER: current_request_id(),
+    }
+    return Response(content=zip_buffer.getvalue(), media_type="application/zip", headers=headers)
 
 
 @app.post("/upload/async")

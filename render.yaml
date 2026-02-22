@@ -87,3 +87,11 @@ services:
         value: "8"
       - key: DB_STATEMENT_TIMEOUT_MS
         value: "15000"
+      - key: RATE_LIMIT_WINDOW_SECONDS
+        value: "60"
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: "30"
+      - key: MAX_ZIP_ITEMS
+        value: "400"
+      - key: MAX_ZIP_SOURCE_BYTES_MB
+        value: "500"

@@ -69,6 +69,7 @@ const BATCH_RETRY_COUNT = 2;
 const BATCH_RETRY_DELAY_MS = 1200;
 const REQUEST_TIMEOUT_MS = 45 * 1000;
 const JOB_STATUS_TIMEOUT_MS = 12 * 1000;
+const ZIP_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
 const ENABLE_SYNC_FALLBACK = ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
 const dropZone = document.getElementById("dropZone");
@@ -225,6 +226,10 @@ const API_ASYNC_UPLOAD_ENDPOINT_CANDIDATES = prioritizeStoredEndpoint(
   buildEndpointCandidates(API_BASE_CANDIDATES, "/upload/async"),
   "visionsort_api_async_upload_endpoint"
 );
+const API_DOWNLOAD_ZIP_ENDPOINT_CANDIDATES = prioritizeStoredEndpoint(
+  buildEndpointCandidates(API_BASE_CANDIDATES, "/download/zip"),
+  "visionsort_api_download_zip_endpoint"
+);
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -258,6 +263,25 @@ function makeZipTimestamp() {
   const mi = String(now.getMinutes()).padStart(2, "0");
   const ss = String(now.getSeconds()).padStart(2, "0");
   return `${yyyy}${mm}${dd}_${hh}${mi}${ss}`;
+}
+
+function parseZipFilenameFromDisposition(contentDisposition) {
+  const header = String(contentDisposition || "");
+  if (!header) {
+    return "";
+  }
+
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1].trim());
+    } catch {
+      return utf8Match[1].trim();
+    }
+  }
+
+  const asciiMatch = header.match(/filename="?([^";]+)"?/i);
+  return asciiMatch?.[1]?.trim() || "";
 }
 
 function bytesToSize(bytes) {
@@ -872,6 +896,87 @@ function categoryItems(categoryKey) {
   return Array.isArray(lastResultsByCategory[categoryKey]) ? lastResultsByCategory[categoryKey] : [];
 }
 
+function buildServerZipPayload(categories, zipNameBase) {
+  const results = {};
+  categories.forEach((categoryKey) => {
+    results[categoryKey] = categoryItems(categoryKey).map((item) => ({
+      file_name: item.file_name || null,
+      renamed_file_name: item.renamed_file_name || item.file_name || null,
+      storage_path: item.storage_path || null,
+      processed_storage_path: item.processed_storage_path || null,
+      final_status: item.final_status || categoryKey,
+    }));
+  });
+
+  return {
+    categories,
+    source: "processed",
+    include_manifest: true,
+    zip_name: `${safeFileName(zipNameBase, "visionsort_folders")}.zip`,
+    results,
+  };
+}
+
+async function buildServerZipDownload(categories, filenamePrefix) {
+  const payload = buildServerZipPayload(categories, filenamePrefix);
+  const failures = [];
+
+  for (const endpoint of API_DOWNLOAD_ZIP_ENDPOINT_CANDIDATES) {
+    try {
+      const response = await fetchWithTimeout(
+        endpoint,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+        ZIP_REQUEST_TIMEOUT_MS
+      );
+      const requestId = response.headers.get("x-request-id") || "";
+
+      if (!response.ok) {
+        const errorMessage = await getResponseErrorMessage(response);
+        failures.push(`${endpoint} -> ${errorMessage}`);
+        continue;
+      }
+
+      const zipBlob = await response.blob();
+      if (!zipBlob || zipBlob.size === 0) {
+        failures.push(`${endpoint} -> Empty ZIP response.`);
+        continue;
+      }
+
+      const serverFilename = parseZipFilenameFromDisposition(response.headers.get("content-disposition"));
+      const fallbackFilename = `${safeFileName(filenamePrefix, "visionsort_folders")}_${makeZipTimestamp()}.zip`;
+      const finalFilename = safeFileName(serverFilename, fallbackFilename);
+
+      logRequestTrace("zip-download", endpoint, requestId, `size=${zipBlob.size}`);
+      localStorage.setItem("visionsort_api_download_zip_endpoint", endpoint);
+
+      return {
+        ok: true,
+        endpoint,
+        requestId,
+        blob: zipBlob,
+        filename: finalFilename,
+      };
+    } catch (error) {
+      let message = error instanceof Error ? error.message : "Unexpected ZIP download error.";
+      if (error instanceof DOMException && error.name === "AbortError") {
+        message = "ZIP generation request timed out.";
+      }
+      failures.push(`${endpoint} -> ${message}`);
+    }
+  }
+
+  return {
+    ok: false,
+    failures,
+  };
+}
+
 async function buildZipForCategories(categories, onProgress) {
   if (!window.JSZip) {
     throw new Error("ZIP library failed to load. Refresh the page and try again.");
@@ -952,15 +1057,30 @@ async function downloadResultsZip(categories, filenamePrefix) {
   updateDownloadControls();
 
   try {
-    setStatus("Preparing ZIP file for download...");
+    setStatus("Preparing server ZIP download...");
+    const serverZip = await buildServerZipDownload(normalizedCategories, filenamePrefix);
+    if (serverZip.ok) {
+      downloadBlob(serverZip.blob, serverZip.filename);
+      setStatus(`ZIP downloaded from server via ${serverZip.endpoint}.${requestIdSuffix(serverZip.requestId)}`);
+      return;
+    }
+
+    // Fallback for local-only or when server ZIP endpoint is unavailable.
+    const fallbackSummary = serverZip.failures.length
+      ? `Server ZIP unavailable. Falling back to browser ZIP. Last error: ${
+          serverZip.failures[serverZip.failures.length - 1]
+        }`
+      : "Server ZIP unavailable. Falling back to browser ZIP.";
+    setStatus(fallbackSummary);
+
     const zipBlob = await buildZipForCategories(normalizedCategories, (meta) => {
       const percent = clamp(Math.round(Number(meta.percent || 0)), 0, 100);
-      setStatus(`Preparing ZIP... ${percent}%`);
+      setStatus(`Preparing browser ZIP... ${percent}%`);
     });
 
     const fileName = `${safeFileName(filenamePrefix, "visionsort_results")}_${makeZipTimestamp()}.zip`;
     downloadBlob(zipBlob, fileName);
-    setStatus(`ZIP downloaded: ${fileName}`);
+    setStatus(`ZIP downloaded (browser fallback): ${fileName}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "ZIP generation failed.";
     showError(message);
