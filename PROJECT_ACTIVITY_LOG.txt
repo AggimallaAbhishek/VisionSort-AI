@@ -274,3 +274,11 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Backend now supports disk-spooled uploads (SPOOL_UPLOADS_TO_DISK), per-request total size cap (MAX_REQUEST_TOTAL_MB), and bounded in-flight persistence tasks.
 - Added safe worker caps (PERSIST_WORKERS_MAX_SAFE, UPLOAD_JOB_WORKERS_MAX_SAFE) and low-memory AI auto-disable guard (DISABLE_AI_ON_LOW_MEMORY, LOW_MEMORY_RAM_MB_THRESHOLD).
 - Frontend default batch sizing reduced to 16MB / 4 files per request to lower server memory pressure.
+[2026-02-25 20:53:04 IST (+0530)]
+- AI threshold tuning verification (local backend).
+- Confirmed backend is reading updated env: AI_MIN_CONFIDENCE=0.40 via GET / (ai.min_confidence = 0.4).
+- Single-image inference check (photo1.jpg): ai_label=duplicates, ai_confidence=43.75, final_status=good.
+- Interpretation: AI signal recorded but rule-based decision remained good under current policy.
+- Duplicate pipeline validation (same file uploaded twice) returned expected counts:
+  {'good': 1, 'blurry': 0, 'dark': 0, 'overexposed': 0, 'duplicates': 1}.
+- Outcome: hash-based duplicate detection and AI+rule arbitration both working as designed.
