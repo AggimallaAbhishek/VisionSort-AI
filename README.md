@@ -269,7 +269,14 @@ Optional AI + rule fusion knobs:
 - For large uploads, prefer async endpoint `POST /upload/async` and poll `GET /jobs/{job_id}`.
 - Use `GET /` to confirm timeout config values after Render deploy.
 - Frontend batch controls (in `frontend/index.html` meta tags):
-  - `visionsort-max-request-size-mb` (default `35`)
-  - `visionsort-max-batch-files` (default `10`)
+  - `visionsort-max-request-size-mb` (default `16`)
+  - `visionsort-max-batch-files` (default `4`)
 - Frontend now uses request timeouts and retries so stalled batches fail fast and retry automatically.
 - ZIP download uses server-side generation from S3 first, with browser ZIP fallback when server ZIP is unavailable.
+
+Low-memory stability knobs (important for Render Free 512 MB):
+- `SPOOL_UPLOADS_TO_DISK=true` avoids keeping all upload bytes in RAM.
+- `MAX_REQUEST_TOTAL_MB=40` caps per-request total payload size.
+- `PERSIST_WORKERS_MAX_SAFE=2` bounds concurrent persistence memory use.
+- `UPLOAD_JOB_WORKERS_MAX_SAFE=1` limits simultaneous async jobs.
+- `DISABLE_AI_ON_LOW_MEMORY=true` auto-disables AI model inference when instance memory is below `LOW_MEMORY_RAM_MB_THRESHOLD`.

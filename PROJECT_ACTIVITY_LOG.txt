@@ -265,3 +265,12 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Fixed uploader failure mode: adaptive upload timeout based on batch size + automatic batch splitting on repeated network failures.
 - Frontend upload now retries with smaller sub-batches (depth-limited) instead of hard failing entire run.
 - Increased default request timeout envelope and kept async-first strategy; cache-busted frontend script version.
+[2026-02-23 00:49:41 IST (+0530)]
+- Verified Render backend environment/runtime snapshot from GET / response.
+- Confirmed S3, DB, CORS, worker, AI, rate-limit, and ZIP-limit configs are active and correctly loaded.
+- No missing required backend env variables detected for current VisionSort AI deployment.
+[2026-02-23 02:37:17 IST (+0530)]
+- Addressed Render 512MB OOM risk with low-memory safeguards and bounded memory processing.
+- Backend now supports disk-spooled uploads (SPOOL_UPLOADS_TO_DISK), per-request total size cap (MAX_REQUEST_TOTAL_MB), and bounded in-flight persistence tasks.
+- Added safe worker caps (PERSIST_WORKERS_MAX_SAFE, UPLOAD_JOB_WORKERS_MAX_SAFE) and low-memory AI auto-disable guard (DISABLE_AI_ON_LOW_MEMORY, LOW_MEMORY_RAM_MB_THRESHOLD).
+- Frontend default batch sizing reduced to 16MB / 4 files per request to lower server memory pressure.

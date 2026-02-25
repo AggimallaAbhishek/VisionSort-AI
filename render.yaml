@@ -45,12 +45,20 @@ services:
         value: "20"
       - key: MAX_FILE_SIZE_MB
         value: "100"
+      - key: MAX_REQUEST_TOTAL_MB
+        value: "40"
       - key: MAX_FILES
         value: "50"
       - key: RENAMED_FILE_PREFIX
         value: "vin_img"
+      - key: SPOOL_UPLOADS_TO_DISK
+        value: "true"
       - key: ENABLE_AI_LABEL
         value: "true"
+      - key: DISABLE_AI_ON_LOW_MEMORY
+        value: "true"
+      - key: LOW_MEMORY_RAM_MB_THRESHOLD
+        value: "700"
       - key: AI_ASSISTED_STATUS
         value: "true"
       - key: AI_FASTPATH_SKIP_STRONG_RULES
@@ -69,8 +77,12 @@ services:
         value: "210"
       - key: PERSIST_WORKERS
         value: "6"
+      - key: PERSIST_WORKERS_MAX_SAFE
+        value: "2"
       - key: UPLOAD_JOB_WORKERS
         value: "2"
+      - key: UPLOAD_JOB_WORKERS_MAX_SAFE
+        value: "1"
       - key: JOB_RETENTION_MINUTES
         value: "60"
       - key: PERSIST_TASK_TIMEOUT_SECONDS

@@ -10,9 +10,10 @@ from io import BytesIO
 import logging
 import os
 import re
+import tempfile
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -38,6 +39,19 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _detect_total_memory_mb() -> int:
+    """Best-effort total system memory detection in MB."""
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        phys_pages = os.sysconf("SC_PHYS_PAGES")
+        if isinstance(page_size, int) and isinstance(phys_pages, int) and page_size > 0 and phys_pages > 0:
+            return int((page_size * phys_pages) / (1024 * 1024))
+    except Exception:
+        return 0
+    return 0
+
+
 BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "100"))
 DUPLICATE_HASH_DISTANCE = int(os.getenv("DUPLICATE_HASH_DISTANCE", "5"))
 MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "1024"))
@@ -47,9 +61,14 @@ INCLUDE_PREVIEW_DATA_URL = os.getenv("INCLUDE_PREVIEW_DATA_URL", "true").lower()
 PREVIEW_INLINE_MAX_FILES = max(1, int(os.getenv("PREVIEW_INLINE_MAX_FILES", "20")))
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
+MAX_REQUEST_TOTAL_MB = max(1, int(os.getenv("MAX_REQUEST_TOTAL_MB", "40")))
+MAX_REQUEST_TOTAL_BYTES = MAX_REQUEST_TOTAL_MB * 1024 * 1024
 MAX_FILES = int(os.getenv("MAX_FILES", "50"))
+SPOOL_UPLOADS_TO_DISK = os.getenv("SPOOL_UPLOADS_TO_DISK", "true").lower() == "true"
 ENABLE_AI_LABEL = os.getenv("ENABLE_AI_LABEL", "true").lower() == "true"
 AI_DISABLE_ABOVE_FILES = max(0, int(os.getenv("AI_DISABLE_ABOVE_FILES", "24")))
+DISABLE_AI_ON_LOW_MEMORY = os.getenv("DISABLE_AI_ON_LOW_MEMORY", "true").lower() == "true"
+LOW_MEMORY_RAM_MB_THRESHOLD = max(0, int(os.getenv("LOW_MEMORY_RAM_MB_THRESHOLD", "700")))
 DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "anonymous")
 RENAMED_FILE_PREFIX = (
     re.sub(r"[^a-zA-Z0-9_-]", "_", os.getenv("RENAMED_FILE_PREFIX", "vin_img").strip()) or "vin_img"
@@ -66,6 +85,8 @@ OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS = max(
 PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
+PERSIST_WORKERS_MAX_SAFE = max(0, int(os.getenv("PERSIST_WORKERS_MAX_SAFE", "0")))
+UPLOAD_JOB_WORKERS_MAX_SAFE = max(0, int(os.getenv("UPLOAD_JOB_WORKERS_MAX_SAFE", "0")))
 PERSIST_TASK_TIMEOUT_SECONDS = max(2, int(os.getenv("PERSIST_TASK_TIMEOUT_SECONDS", "30")))
 PERSIST_OVERALL_TIMEOUT_SECONDS = max(15, int(os.getenv("PERSIST_OVERALL_TIMEOUT_SECONDS", "90")))
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
@@ -75,6 +96,20 @@ MAX_ZIP_SOURCE_BYTES_MB = max(10, int(os.getenv("MAX_ZIP_SOURCE_BYTES_MB", "500"
 MAX_ZIP_SOURCE_BYTES = MAX_ZIP_SOURCE_BYTES_MB * 1024 * 1024
 CATEGORY_KEYS = ("good", "blurry", "dark", "overexposed", "duplicates")
 ZIP_SOURCES = {"processed", "original"}
+
+if PERSIST_WORKERS_MAX_SAFE > 0:
+    PERSIST_WORKERS = min(PERSIST_WORKERS, PERSIST_WORKERS_MAX_SAFE)
+if UPLOAD_JOB_WORKERS_MAX_SAFE > 0:
+    UPLOAD_JOB_WORKERS = min(UPLOAD_JOB_WORKERS, UPLOAD_JOB_WORKERS_MAX_SAFE)
+
+TOTAL_MEMORY_MB = _detect_total_memory_mb()
+if ENABLE_AI_LABEL and DISABLE_AI_ON_LOW_MEMORY and TOTAL_MEMORY_MB and TOTAL_MEMORY_MB < LOW_MEMORY_RAM_MB_THRESHOLD:
+    logger.warning(
+        "Low-memory guard active (%s MB < %s MB). Disabling AI inference to prevent OOM.",
+        TOTAL_MEMORY_MB,
+        LOW_MEMORY_RAM_MB_THRESHOLD,
+    )
+    ENABLE_AI_LABEL = False
 
 ALLOWED_IMAGE_TYPES = {
     "image/jpeg",
@@ -287,6 +322,9 @@ def root() -> Dict[str, Any]:
     return {
         "message": "VisionSort AI backend is running.",
         "service": aws_service.health_snapshot(),
+        "runtime": {
+            "total_memory_mb": TOTAL_MEMORY_MB or None,
+        },
         "cors": {
             "allow_origins": allow_origins,
             "allow_origin_regex": allow_origin_regex,
@@ -294,17 +332,21 @@ def root() -> Dict[str, Any]:
         "workers": {
             "persist_workers": PERSIST_WORKERS,
             "upload_job_workers": UPLOAD_JOB_WORKERS,
+            "persist_workers_max_safe": PERSIST_WORKERS_MAX_SAFE,
+            "upload_job_workers_max_safe": UPLOAD_JOB_WORKERS_MAX_SAFE,
             "persist_task_timeout_seconds": PERSIST_TASK_TIMEOUT_SECONDS,
             "persist_overall_timeout_seconds": PERSIST_OVERALL_TIMEOUT_SECONDS,
         },
         "limits": {
             "max_file_size_mb": MAX_FILE_SIZE_MB,
+            "max_request_total_mb": MAX_REQUEST_TOTAL_MB,
             "max_files": MAX_FILES,
             "max_image_width": MAX_IMAGE_WIDTH,
             "preview_max_width": PREVIEW_MAX_WIDTH,
             "preview_jpeg_quality": PREVIEW_JPEG_QUALITY,
             "include_preview_data_url": INCLUDE_PREVIEW_DATA_URL,
             "preview_inline_max_files": PREVIEW_INLINE_MAX_FILES,
+            "spool_uploads_to_disk": SPOOL_UPLOADS_TO_DISK,
             "max_zip_items": MAX_ZIP_ITEMS,
             "max_zip_source_bytes_mb": MAX_ZIP_SOURCE_BYTES_MB,
             "renamed_file_prefix": RENAMED_FILE_PREFIX,
@@ -313,6 +355,8 @@ def root() -> Dict[str, Any]:
         },
         "ai": {
             "enabled": ENABLE_AI_LABEL,
+            "disabled_on_low_memory": DISABLE_AI_ON_LOW_MEMORY,
+            "low_memory_ram_mb_threshold": LOW_MEMORY_RAM_MB_THRESHOLD,
             "assisted_status": AI_ASSISTED_STATUS,
             "fastpath_skip_strong_rules": AI_FASTPATH_SKIP_STRONG_RULES,
             "disable_above_files": AI_DISABLE_ABOVE_FILES,
@@ -737,9 +781,14 @@ def persist_artifacts(
     return uploads_storage_path, processed_storage_path
 
 
-async def read_upload_payloads(files: List[UploadFile]) -> List[UploadPayload]:
+async def read_upload_payloads(
+    files: List[UploadFile],
+    *,
+    spool_to_disk: bool = SPOOL_UPLOADS_TO_DISK,
+) -> List[UploadPayload]:
     """Read and validate uploads once so they can be processed sync/async."""
     payloads: List[UploadPayload] = []
+    total_request_bytes = 0
 
     for upload in files:
         file_name = sanitize_filename(upload.filename or "unnamed_image")
@@ -752,6 +801,7 @@ async def read_upload_payloads(files: List[UploadFile]) -> List[UploadPayload]:
                     "file_name": file_name,
                     "content_type": None,
                     "raw_bytes": b"",
+                    "temp_path": None,
                     "validation_error": "unsupported_file_type",
                 }
             )
@@ -765,6 +815,7 @@ async def read_upload_payloads(files: List[UploadFile]) -> List[UploadPayload]:
                     "file_name": file_name,
                     "content_type": content_type,
                     "raw_bytes": b"",
+                    "temp_path": None,
                     "validation_error": "empty_file",
                 }
             )
@@ -777,16 +828,36 @@ async def read_upload_payloads(files: List[UploadFile]) -> List[UploadPayload]:
                     "file_name": file_name,
                     "content_type": content_type,
                     "raw_bytes": b"",
+                    "temp_path": None,
                     "validation_error": "file_too_large",
                 }
             )
             continue
+
+        total_request_bytes += len(raw_bytes)
+        if total_request_bytes > MAX_REQUEST_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"Total upload size exceeded limit of {MAX_REQUEST_TOTAL_MB} MB. "
+                    "Upload fewer files per request."
+                ),
+            )
+
+        temp_path: str | None = None
+        if spool_to_disk:
+            suffix = resolve_extension(content_type, file_name)
+            with tempfile.NamedTemporaryFile(prefix="visionsort_upload_", suffix=suffix, delete=False) as temp_file:
+                temp_file.write(raw_bytes)
+                temp_path = temp_file.name
+            raw_bytes = b""
 
         payloads.append(
             {
                 "file_name": file_name,
                 "content_type": content_type,
                 "raw_bytes": raw_bytes,
+                "temp_path": temp_path,
                 "validation_error": None,
             }
         )
@@ -802,7 +873,7 @@ def process_upload_payloads(
     results = build_results_template()
     seen_hashes: List[Any] = []
     metadata_rows: List[Dict[str, Any]] = []
-    persistence_tasks: List[Tuple[Future[Tuple[str | None, str | None]], Dict[str, Any], str]] = []
+    active_persistence_tasks: List[Tuple[Future[Tuple[str | None, str | None]], Dict[str, Any], str]] = []
     processed_count = 0
     total_files = len(payloads)
     valid_file_count = sum(1 for payload in payloads if not payload.get("validation_error"))
@@ -812,14 +883,39 @@ def process_upload_payloads(
     request_batch_id = f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     object_date_prefix = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
+    def resolve_persistence_task(
+        task: Tuple[Future[Tuple[str | None, str | None]], Dict[str, Any], str],
+        *,
+        timeout_seconds: float,
+    ) -> None:
+        future, item, file_name = task
+        if timeout_seconds <= 0:
+            future.cancel()
+            logger.error("Persistence task timed out (overall deadline) for %s", file_name)
+            return
+        try:
+            uploads_storage_path, processed_storage_path = future.result(timeout=timeout_seconds)
+            item["storage_path"] = uploads_storage_path
+            item["processed_storage_path"] = processed_storage_path
+        except FutureTimeoutError:
+            future.cancel()
+            logger.error("Persistence task timed out for %s", file_name)
+        except Exception as exc:
+            logger.exception("Persistence task failed for %s: %s", file_name, exc)
+
     for index, payload in enumerate(payloads, start=1):
         original_file_name = payload["file_name"]
+        temp_path = payload.get("temp_path")
         try:
             validation_error = payload.get("validation_error")
             if validation_error:
                 continue
 
-            raw_bytes: bytes = payload["raw_bytes"]
+            raw_bytes: bytes
+            if temp_path:
+                raw_bytes = Path(temp_path).read_bytes()
+            else:
+                raw_bytes = payload["raw_bytes"]
             content_type: str = payload["content_type"]
 
             image = decode_image(raw_bytes)
@@ -889,7 +985,7 @@ def process_upload_payloads(
                 )
 
             if s3_persistence_enabled:
-                persistence_tasks.append(
+                active_persistence_tasks.append(
                     (
                         persist_executor.submit(
                             persist_artifacts,
@@ -905,48 +1001,37 @@ def process_upload_payloads(
                         renamed_file_name,
                     )
                 )
+                if len(active_persistence_tasks) >= PERSIST_WORKERS:
+                    resolve_persistence_task(
+                        active_persistence_tasks.pop(0),
+                        timeout_seconds=float(PERSIST_TASK_TIMEOUT_SECONDS),
+                    )
 
         except ValueError as exc:
             logger.warning("Skipping invalid image %s: %s", original_file_name, exc)
         except Exception as exc:
             logger.exception("Unexpected processing error for %s: %s", original_file_name, exc)
         finally:
+            payload["raw_bytes"] = b""
+            if temp_path:
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Failed to remove temp upload file %s: %s", temp_path, exc)
             if progress_hook:
                 progress_hook(index, total_files, original_file_name, "processing")
 
     if progress_hook and total_files:
         progress_hook(total_files, total_files, "", "finalizing")
 
-    if persistence_tasks:
-        future_map: Dict[Future[Tuple[str | None, str | None]], Tuple[Dict[str, Any], str]] = {
-            future: (item, file_name) for future, item, file_name in persistence_tasks
-        }
-        completed_futures: set[Future[Tuple[str | None, str | None]]] = set()
-
-        try:
-            for future in as_completed(future_map, timeout=PERSIST_OVERALL_TIMEOUT_SECONDS):
-                item, file_name = future_map[future]
-                completed_futures.add(future)
-                try:
-                    uploads_storage_path, processed_storage_path = future.result()
-                    item["storage_path"] = uploads_storage_path
-                    item["processed_storage_path"] = processed_storage_path
-                except Exception as exc:
-                    logger.exception("Persistence task failed for %s: %s", file_name, exc)
-        except FutureTimeoutError:
-            logger.error(
-                "Persistence phase exceeded overall timeout (%ss). Completing with partial storage paths.",
-                PERSIST_OVERALL_TIMEOUT_SECONDS,
+    if active_persistence_tasks:
+        deadline = time.perf_counter() + float(PERSIST_OVERALL_TIMEOUT_SECONDS)
+        for task in active_persistence_tasks:
+            remaining = deadline - time.perf_counter()
+            resolve_persistence_task(
+                task,
+                timeout_seconds=min(float(PERSIST_TASK_TIMEOUT_SECONDS), max(0.0, remaining)),
             )
-        finally:
-            for future, (_, file_name) in future_map.items():
-                if future in completed_futures:
-                    continue
-                future.cancel()
-                logger.error(
-                    "Persistence task did not complete before overall timeout for %s",
-                    file_name,
-                )
 
     if metadata_rows and aws_service.db_enabled:
         try:
