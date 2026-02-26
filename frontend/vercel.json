@@ -43,11 +43,11 @@
   "rewrites": [
     {
       "source": "/api",
-      "destination": "/api/_proxy"
+      "destination": "/api/proxy"
     },
     {
-      "source": "/api/(.*)",
-      "destination": "/api/_proxy?path=$1"
+      "source": "/api/:path*",
+      "destination": "/api/proxy?path=:path*"
     }
   ]
 }

@@ -334,3 +334,9 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Validation:
   - node --check frontend/api/_proxy.js passed.
   - vercel.json JSON validation passed.
+[2026-02-26 18:23:49 IST] Fix: Vercel /api proxy routing stabilization.
+- Added frontend API function: /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/api/proxy.js
+- Updated rewrites in /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/vercel.json to use /api/proxy and :path* syntax.
+- Removed deprecated function route file: /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/api/_proxy.js
+- Validation: node --check passed for proxy.js; vercel.json parsed successfully.
+[2026-02-26 18:28:56 IST] Docs: updated README proxy reference from frontend/api/_proxy.js to frontend/api/proxy.js.
