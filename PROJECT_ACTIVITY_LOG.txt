@@ -352,7 +352,17 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/.env.example with UPLOAD_READ_CHUNK_KB.
 - Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/README.md with preview-disable and chunked-read tuning notes.
 - Validation: main.py AST parse passed.
-[2026-02-26 21:50:51 IST] Validation and observability updates for optimization pass.
-- Added  to backend health response so deployed config can be verified.
-- Runtime validation (local, S3/DB disabled in env override) passed for  and  (spool mode).
+[2026-02-26 21:52:13 IST] Validation and observability updates for optimization pass.
+- Added limits.upload_read_chunk_kb to backend health response so deployed config can be verified.
+- Runtime validation (local, S3/DB disabled in env override) passed for process_upload_payloads and read_upload_payloads (spool mode).
 - Note: Python py_compile check inside sandbox writes to backend/__pycache__ and is blocked by permissions; AST parse and runtime checks were used instead.
+[2026-02-26 22:21:02 IST] Performance default tuning updates.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/render.yaml defaults:
+  - INCLUDE_PREVIEW_DATA_URL=false
+  - PREVIEW_INLINE_MAX_FILES=0
+  - UPLOAD_READ_CHUNK_KB=1024
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/.env.example defaults:
+  - INCLUDE_PREVIEW_DATA_URL=false
+  - PREVIEW_INLINE_MAX_FILES=0
+  - UPLOAD_READ_CHUNK_KB=1024
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/README.md with explicit fast-mode preview recommendations.

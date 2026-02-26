@@ -52,9 +52,9 @@ services:
       - key: PREVIEW_JPEG_QUALITY
         value: "70"
       - key: INCLUDE_PREVIEW_DATA_URL
-        value: "true"
+        value: "false"
       - key: PREVIEW_INLINE_MAX_FILES
-        value: "20"
+        value: "0"
       - key: MAX_FILE_SIZE_MB
         value: "100"
       - key: MAX_REQUEST_TOTAL_MB
@@ -65,6 +65,8 @@ services:
         value: "vin_img"
       - key: SPOOL_UPLOADS_TO_DISK
         value: "true"
+      - key: UPLOAD_READ_CHUNK_KB
+        value: "1024"
       - key: ENABLE_AI_LABEL
         value: "true"
       - key: DISABLE_AI_ON_LOW_MEMORY

@@ -319,6 +319,8 @@ Low-memory stability knobs (important for Render Free 512 MB):
 - `SPOOL_UPLOADS_TO_DISK=true` avoids keeping all upload bytes in RAM.
 - `UPLOAD_READ_CHUNK_KB=1024` streams upload reads in chunks to reduce memory spikes.
 - `MAX_REQUEST_TOTAL_MB=40` caps per-request total payload size.
+- `INCLUDE_PREVIEW_DATA_URL=false` avoids large base64 response payloads.
+- `PREVIEW_INLINE_MAX_FILES=0` fully disables inline previews (UI still works with placeholders).
 - `PERSIST_WORKERS_MAX_SAFE=2` bounds concurrent persistence memory use.
 - `UPLOAD_JOB_WORKERS_MAX_SAFE=1` limits simultaneous async jobs.
 - `DISABLE_AI_ON_LOW_MEMORY=true` auto-disables AI model inference when instance memory is below `LOW_MEMORY_RAM_MB_THRESHOLD`.
