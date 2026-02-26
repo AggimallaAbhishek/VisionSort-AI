@@ -302,7 +302,7 @@ BACKEND_API_KEY=<same-value-as-render-backend>
 - Response previews are compressed using `PREVIEW_MAX_WIDTH` and `PREVIEW_JPEG_QUALITY` to keep large batches stable.
 - For very large batches, inline previews can be auto-disabled using:
   - `INCLUDE_PREVIEW_DATA_URL`
-  - `PREVIEW_INLINE_MAX_FILES`
+  - `PREVIEW_INLINE_MAX_FILES` (set `0` to disable inline preview entirely)
 - AI inference can be auto-skipped/limited for faster runs using:
   - `AI_DISABLE_ABOVE_FILES`
   - `AI_FASTPATH_SKIP_STRONG_RULES`
@@ -317,6 +317,7 @@ BACKEND_API_KEY=<same-value-as-render-backend>
 
 Low-memory stability knobs (important for Render Free 512 MB):
 - `SPOOL_UPLOADS_TO_DISK=true` avoids keeping all upload bytes in RAM.
+- `UPLOAD_READ_CHUNK_KB=1024` streams upload reads in chunks to reduce memory spikes.
 - `MAX_REQUEST_TOTAL_MB=40` caps per-request total payload size.
 - `PERSIST_WORKERS_MAX_SAFE=2` bounds concurrent persistence memory use.
 - `UPLOAD_JOB_WORKERS_MAX_SAFE=1` limits simultaneous async jobs.

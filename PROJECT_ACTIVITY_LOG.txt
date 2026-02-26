@@ -343,3 +343,16 @@ Next Entry Placeholder (Use This Block for Future Updates)
 [2026-02-26 19:14:57 IST] Fix: frontend Vercel proxy upload reliability.
 - Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/api/proxy.js to stream non-GET request bodies directly (duplex='half') instead of buffering entire body in memory.
 - Goal: reduce proxy memory pressure and mitigate 502 failures during file upload forwarding.
+[2026-02-26 21:17:00 IST] Backend optimization and bug-fix pass.
+- Optimized upload ingestion in /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/main.py:
+  - Added chunked upload reading in spool mode (UPLOAD_READ_CHUNK_KB) to reduce memory spikes.
+  - Allowed PREVIEW_INLINE_MAX_FILES=0 (true disable) and applied this check in inline preview logic.
+  - Removed duplicate HSV conversion by classifying brightness from precomputed mean value.
+  - Reworked persistence task coordination to wait for first-completed future (avoids head-of-line blocking on slow S3 writes).
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/.env.example with UPLOAD_READ_CHUNK_KB.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/README.md with preview-disable and chunked-read tuning notes.
+- Validation: main.py AST parse passed.
+[2026-02-26 21:50:51 IST] Validation and observability updates for optimization pass.
+- Added  to backend health response so deployed config can be verified.
+- Runtime validation (local, S3/DB disabled in env override) passed for  and  (spool mode).
+- Note: Python py_compile check inside sandbox writes to backend/__pycache__ and is blocked by permissions; AST parse and runtime checks were used instead.

@@ -14,7 +14,7 @@ import re
 import tempfile
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -33,7 +33,6 @@ from PIL import Image
 
 from aws_client import AWSService
 from utils.blur_detection import detect_blur
-from utils.brightness_check import analyze_brightness
 from utils.duplicate_check import is_duplicate
 
 load_dotenv()
@@ -60,13 +59,14 @@ MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "1024"))
 PREVIEW_MAX_WIDTH = int(os.getenv("PREVIEW_MAX_WIDTH", "640"))
 PREVIEW_JPEG_QUALITY = max(30, min(95, int(os.getenv("PREVIEW_JPEG_QUALITY", "70"))))
 INCLUDE_PREVIEW_DATA_URL = os.getenv("INCLUDE_PREVIEW_DATA_URL", "true").lower() == "true"
-PREVIEW_INLINE_MAX_FILES = max(1, int(os.getenv("PREVIEW_INLINE_MAX_FILES", "20")))
+PREVIEW_INLINE_MAX_FILES = max(0, int(os.getenv("PREVIEW_INLINE_MAX_FILES", "20")))
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_REQUEST_TOTAL_MB = max(1, int(os.getenv("MAX_REQUEST_TOTAL_MB", "40")))
 MAX_REQUEST_TOTAL_BYTES = MAX_REQUEST_TOTAL_MB * 1024 * 1024
 MAX_FILES = int(os.getenv("MAX_FILES", "50"))
 SPOOL_UPLOADS_TO_DISK = os.getenv("SPOOL_UPLOADS_TO_DISK", "true").lower() == "true"
+UPLOAD_READ_CHUNK_BYTES = max(64 * 1024, int(os.getenv("UPLOAD_READ_CHUNK_KB", "1024")) * 1024)
 ENABLE_AI_LABEL = os.getenv("ENABLE_AI_LABEL", "true").lower() == "true"
 AI_DISABLE_ABOVE_FILES = max(0, int(os.getenv("AI_DISABLE_ABOVE_FILES", "24")))
 DISABLE_AI_ON_LOW_MEMORY = os.getenv("DISABLE_AI_ON_LOW_MEMORY", "true").lower() == "true"
@@ -446,6 +446,7 @@ def root() -> Dict[str, Any]:
             "include_preview_data_url": INCLUDE_PREVIEW_DATA_URL,
             "preview_inline_max_files": PREVIEW_INLINE_MAX_FILES,
             "spool_uploads_to_disk": SPOOL_UPLOADS_TO_DISK,
+            "upload_read_chunk_kb": int(UPLOAD_READ_CHUNK_BYTES / 1024),
             "max_zip_items": MAX_ZIP_ITEMS,
             "max_zip_source_bytes_mb": MAX_ZIP_SOURCE_BYTES_MB,
             "renamed_file_prefix": RENAMED_FILE_PREFIX,
@@ -729,6 +730,15 @@ def calculate_brightness_value(image: np.ndarray) -> float:
     return float(hsv[:, :, 2].mean())
 
 
+def classify_brightness_level(brightness_value: float) -> str:
+    """Classify brightness level using precomputed HSV mean value."""
+    if brightness_value < 50:
+        return "dark"
+    if brightness_value > 200:
+        return "overexposed"
+    return "normal"
+
+
 def calculate_blur_quality_score(blur_score: float) -> float:
     """Map blur variance to a 0-100 quality score."""
     scale = max(BLUR_THRESHOLD * 3.0, 1.0)
@@ -912,52 +922,129 @@ async def read_upload_payloads(
                     "validation_error": "unsupported_file_type",
                 }
             )
+            try:
+                await upload.close()
+            except Exception:
+                pass
             continue
 
-        raw_bytes = await upload.read()
-        if not raw_bytes:
-            logger.warning("Skipping empty file: %s", file_name)
-            payloads.append(
-                {
-                    "file_name": file_name,
-                    "content_type": content_type,
-                    "raw_bytes": b"",
-                    "temp_path": None,
-                    "validation_error": "empty_file",
-                }
-            )
-            continue
-
-        if len(raw_bytes) > MAX_FILE_SIZE_BYTES:
-            logger.warning("Skipping oversized file: %s", file_name)
-            payloads.append(
-                {
-                    "file_name": file_name,
-                    "content_type": content_type,
-                    "raw_bytes": b"",
-                    "temp_path": None,
-                    "validation_error": "file_too_large",
-                }
-            )
-            continue
-
-        total_request_bytes += len(raw_bytes)
-        if total_request_bytes > MAX_REQUEST_TOTAL_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"Total upload size exceeded limit of {MAX_REQUEST_TOTAL_MB} MB. "
-                    "Upload fewer files per request."
-                ),
-            )
-
+        raw_bytes = b""
         temp_path: str | None = None
+
         if spool_to_disk:
             suffix = resolve_extension(content_type, file_name)
-            with tempfile.NamedTemporaryFile(prefix="visionsort_upload_", suffix=suffix, delete=False) as temp_file:
-                temp_file.write(raw_bytes)
-                temp_path = temp_file.name
-            raw_bytes = b""
+            current_file_bytes = 0
+            oversized = False
+
+            try:
+                with tempfile.NamedTemporaryFile(prefix="visionsort_upload_", suffix=suffix, delete=False) as temp_file:
+                    temp_path = temp_file.name
+
+                    while True:
+                        chunk = await upload.read(UPLOAD_READ_CHUNK_BYTES)
+                        if not chunk:
+                            break
+
+                        chunk_size = len(chunk)
+                        current_file_bytes += chunk_size
+                        if current_file_bytes > MAX_FILE_SIZE_BYTES:
+                            oversized = True
+                            break
+
+                        total_request_bytes += chunk_size
+                        if total_request_bytes > MAX_REQUEST_TOTAL_BYTES:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=(
+                                    f"Total upload size exceeded limit of {MAX_REQUEST_TOTAL_MB} MB. "
+                                    "Upload fewer files per request."
+                                ),
+                            )
+
+                        temp_file.write(chunk)
+
+                if oversized:
+                    logger.warning("Skipping oversized file: %s", file_name)
+                    if temp_path:
+                        Path(temp_path).unlink(missing_ok=True)
+                    payloads.append(
+                        {
+                            "file_name": file_name,
+                            "content_type": content_type,
+                            "raw_bytes": b"",
+                            "temp_path": None,
+                            "validation_error": "file_too_large",
+                        }
+                    )
+                    continue
+
+                if current_file_bytes == 0:
+                    logger.warning("Skipping empty file: %s", file_name)
+                    if temp_path:
+                        Path(temp_path).unlink(missing_ok=True)
+                    payloads.append(
+                        {
+                            "file_name": file_name,
+                            "content_type": content_type,
+                            "raw_bytes": b"",
+                            "temp_path": None,
+                            "validation_error": "empty_file",
+                        }
+                    )
+                    continue
+
+            except Exception:
+                if temp_path:
+                    try:
+                        Path(temp_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                raise
+        else:
+            raw_bytes = await upload.read()
+            if not raw_bytes:
+                logger.warning("Skipping empty file: %s", file_name)
+                payloads.append(
+                    {
+                        "file_name": file_name,
+                        "content_type": content_type,
+                        "raw_bytes": b"",
+                        "temp_path": None,
+                        "validation_error": "empty_file",
+                    }
+                )
+                try:
+                    await upload.close()
+                except Exception:
+                    pass
+                continue
+
+            if len(raw_bytes) > MAX_FILE_SIZE_BYTES:
+                logger.warning("Skipping oversized file: %s", file_name)
+                payloads.append(
+                    {
+                        "file_name": file_name,
+                        "content_type": content_type,
+                        "raw_bytes": b"",
+                        "temp_path": None,
+                        "validation_error": "file_too_large",
+                    }
+                )
+                try:
+                    await upload.close()
+                except Exception:
+                    pass
+                continue
+
+            total_request_bytes += len(raw_bytes)
+            if total_request_bytes > MAX_REQUEST_TOTAL_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Total upload size exceeded limit of {MAX_REQUEST_TOTAL_MB} MB. "
+                        "Upload fewer files per request."
+                    ),
+                )
 
         payloads.append(
             {
@@ -968,6 +1055,11 @@ async def read_upload_payloads(
                 "validation_error": None,
             }
         )
+
+        try:
+            await upload.close()
+        except Exception:
+            pass
 
     return payloads
 
@@ -980,35 +1072,53 @@ def process_upload_payloads(
     results = build_results_template()
     seen_hashes: List[Any] = []
     metadata_rows: List[Dict[str, Any]] = []
-    active_persistence_tasks: List[Tuple[Future[Tuple[str | None, str | None]], Dict[str, Any], str]] = []
+    active_persistence_tasks: Dict[Future[Tuple[str | None, str | None]], Tuple[Dict[str, Any], str]] = {}
     processed_count = 0
     total_files = len(payloads)
     valid_file_count = sum(1 for payload in payloads if not payload.get("validation_error"))
-    include_inline_preview = INCLUDE_PREVIEW_DATA_URL and valid_file_count <= PREVIEW_INLINE_MAX_FILES
+    include_inline_preview = (
+        INCLUDE_PREVIEW_DATA_URL and PREVIEW_INLINE_MAX_FILES > 0 and valid_file_count <= PREVIEW_INLINE_MAX_FILES
+    )
     ai_disabled_for_batch = AI_DISABLE_ABOVE_FILES > 0 and valid_file_count > AI_DISABLE_ABOVE_FILES
     s3_persistence_enabled = aws_service.s3_enabled
     request_batch_id = f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     object_date_prefix = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 
-    def resolve_persistence_task(
-        task: Tuple[Future[Tuple[str | None, str | None]], Dict[str, Any], str],
-        *,
-        timeout_seconds: float,
+    def resolve_persistence_future(
+        future: Future[Tuple[str | None, str | None]],
+        item: Dict[str, Any],
+        file_name: str,
     ) -> None:
-        future, item, file_name = task
-        if timeout_seconds <= 0:
-            future.cancel()
-            logger.error("Persistence task timed out (overall deadline) for %s", file_name)
-            return
         try:
-            uploads_storage_path, processed_storage_path = future.result(timeout=timeout_seconds)
+            uploads_storage_path, processed_storage_path = future.result()
             item["storage_path"] = uploads_storage_path
             item["processed_storage_path"] = processed_storage_path
-        except FutureTimeoutError:
-            future.cancel()
-            logger.error("Persistence task timed out for %s", file_name)
         except Exception as exc:
             logger.exception("Persistence task failed for %s: %s", file_name, exc)
+
+    def wait_for_persistence_slot(timeout_seconds: float) -> None:
+        if not active_persistence_tasks:
+            return
+
+        done, _ = wait(
+            list(active_persistence_tasks.keys()),
+            timeout=max(0.0, timeout_seconds),
+            return_when=FIRST_COMPLETED,
+        )
+
+        if done:
+            for completed_future in done:
+                task = active_persistence_tasks.pop(completed_future, None)
+                if not task:
+                    continue
+                item, file_name = task
+                resolve_persistence_future(completed_future, item, file_name)
+            return
+
+        oldest_future = next(iter(active_persistence_tasks))
+        item, file_name = active_persistence_tasks.pop(oldest_future)
+        oldest_future.cancel()
+        logger.error("Persistence task timed out for %s", file_name)
 
     for index, payload in enumerate(payloads, start=1):
         original_file_name = payload["file_name"]
@@ -1033,7 +1143,7 @@ def process_upload_payloads(
             blur_quality_score = calculate_blur_quality_score(blur_score)
             brightness_value = calculate_brightness_value(resized_image)
             brightness_score = calculate_brightness_quality_score(brightness_value)
-            brightness_level = analyze_brightness(resized_image)
+            brightness_level = classify_brightness_level(brightness_value)
             duplicate = is_duplicate(pil_image, seen_hashes, threshold=DUPLICATE_HASH_DISTANCE)
             rule_status = choose_rule_status(blur_score, brightness_level, duplicate)
             if ai_disabled_for_batch:
@@ -1068,6 +1178,7 @@ def process_upload_payloads(
                 preview_bytes = encode_preview_jpeg(preview_image, quality=PREVIEW_JPEG_QUALITY)
                 if include_inline_preview:
                     preview_data_url = f"data:image/jpeg;base64,{base64.b64encode(preview_bytes).decode('utf-8')}"
+
             item = build_item_payload(
                 original_file_name=original_file_name,
                 renamed_file_name=renamed_file_name,
@@ -1086,33 +1197,27 @@ def process_upload_payloads(
                 processed_storage_path=None,
             )
             results[final_status].append(item)
+
             if aws_service.db_enabled:
                 metadata_rows.append(
                     build_metadata_row(renamed_file_name, blur_score, brightness_level, ai_label, final_status)
                 )
 
             if s3_persistence_enabled:
-                active_persistence_tasks.append(
-                    (
-                        persist_executor.submit(
-                            persist_artifacts,
-                            renamed_file_name=renamed_file_name,
-                            final_status=final_status,
-                            request_batch_id=request_batch_id,
-                            object_date_prefix=object_date_prefix,
-                            content_type=content_type,
-                            raw_bytes=raw_bytes,
-                            preview_bytes=preview_bytes,
-                        ),
-                        item,
-                        renamed_file_name,
-                    )
+                persistence_future = persist_executor.submit(
+                    persist_artifacts,
+                    renamed_file_name=renamed_file_name,
+                    final_status=final_status,
+                    request_batch_id=request_batch_id,
+                    object_date_prefix=object_date_prefix,
+                    content_type=content_type,
+                    raw_bytes=raw_bytes,
+                    preview_bytes=preview_bytes,
                 )
+                active_persistence_tasks[persistence_future] = (item, renamed_file_name)
+
                 if len(active_persistence_tasks) >= PERSIST_WORKERS:
-                    resolve_persistence_task(
-                        active_persistence_tasks.pop(0),
-                        timeout_seconds=float(PERSIST_TASK_TIMEOUT_SECONDS),
-                    )
+                    wait_for_persistence_slot(float(PERSIST_TASK_TIMEOUT_SECONDS))
 
         except ValueError as exc:
             logger.warning("Skipping invalid image %s: %s", original_file_name, exc)
@@ -1133,12 +1238,16 @@ def process_upload_payloads(
 
     if active_persistence_tasks:
         deadline = time.perf_counter() + float(PERSIST_OVERALL_TIMEOUT_SECONDS)
-        for task in active_persistence_tasks:
+        while active_persistence_tasks:
             remaining = deadline - time.perf_counter()
-            resolve_persistence_task(
-                task,
-                timeout_seconds=min(float(PERSIST_TASK_TIMEOUT_SECONDS), max(0.0, remaining)),
-            )
+            if remaining <= 0:
+                for future, (_, file_name) in list(active_persistence_tasks.items()):
+                    future.cancel()
+                    logger.error("Persistence task timed out (overall deadline) for %s", file_name)
+                    active_persistence_tasks.pop(future, None)
+                break
+
+            wait_for_persistence_slot(min(float(PERSIST_TASK_TIMEOUT_SECONDS), max(0.0, remaining)))
 
     if metadata_rows and aws_service.db_enabled:
         try:
