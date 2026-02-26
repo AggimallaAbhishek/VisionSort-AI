@@ -340,3 +340,6 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Removed deprecated function route file: /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/api/_proxy.js
 - Validation: node --check passed for proxy.js; vercel.json parsed successfully.
 [2026-02-26 18:28:56 IST] Docs: updated README proxy reference from frontend/api/_proxy.js to frontend/api/proxy.js.
+[2026-02-26 19:14:57 IST] Fix: frontend Vercel proxy upload reliability.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/api/proxy.js to stream non-GET request bodies directly (duplex='half') instead of buffering entire body in memory.
+- Goal: reduce proxy memory pressure and mitigate 502 failures during file upload forwarding.

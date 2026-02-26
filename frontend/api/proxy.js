@@ -74,14 +74,6 @@ function buildUpstreamQueryString(req) {
   return qs ? `?${qs}` : "";
 }
 
-async function readRawBody(req) {
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return chunks.length ? Buffer.concat(chunks) : null;
-}
-
 function copyUpstreamHeaders(upstreamResponse, res) {
   const headerNames = [
     "content-type",
@@ -155,7 +147,9 @@ module.exports = async function handler(req, res) {
   };
 
   if (!["GET", "HEAD"].includes(method)) {
-    requestOptions.body = await readRawBody(req);
+    // Stream multipart/file uploads through the proxy to reduce memory usage.
+    requestOptions.body = req;
+    requestOptions.duplex = "half";
   }
 
   try {
