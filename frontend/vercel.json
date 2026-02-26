@@ -1,16 +1,6 @@
 {
   "version": 2,
   "trailingSlash": false,
-  "rewrites": [
-    {
-      "source": "/api",
-      "destination": "https://visionsort-ai.onrender.com/"
-    },
-    {
-      "source": "/api/(.*)",
-      "destination": "https://visionsort-ai.onrender.com/$1"
-    }
-  ],
   "headers": [
     {
       "source": "/(.*)",
@@ -45,7 +35,7 @@
         },
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://visionsort-ai.onrender.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+          "value": "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
         }
       ]
     }

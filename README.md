@@ -244,12 +244,18 @@ ENABLE_API_DOCS=false
 EXPOSE_HEALTH_DETAILS=false
 ```
 
-When `BACKEND_API_KEY` is set, include it on requests:
+When `BACKEND_API_KEY` is set, direct backend requests must include the key:
 
 ```bash
-curl -X POST "https://visionsort-ai.onrender.com/upload" \
-  -H "x-api-key: <your-secret>" \
-  -F "files=@/absolute/path/photo1.jpg"
+curl -X POST "https://visionsort-ai.onrender.com/upload"   -H "x-api-key: <your-secret>"   -F "files=@/absolute/path/photo1.jpg"
+```
+
+For browser uploads, this project now uses a Vercel server-side proxy (`frontend/api/[...path].js`) so the API key stays on the server.
+Set this Vercel environment variable:
+
+```env
+BACKEND_PROXY_TARGET=https://visionsort-ai.onrender.com
+BACKEND_API_KEY=<same-value-as-render-backend>
 ```
 
 ## Deploy

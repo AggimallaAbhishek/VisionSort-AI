@@ -302,3 +302,22 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - `python3 -m py_compile backend/main.py` passed.
   - `node --check frontend/script.js` passed.
   - `python3 -m json.tool frontend/vercel.json` passed.
+[2026-02-26 16:15:23 IST (+0530)]
+- Implemented secure frontend-to-backend proxy flow for API-key protected backend.
+- Added Vercel serverless catch-all proxy: frontend/api/[...path].js
+  - Forwards only allowlisted backend routes.
+  - Injects BACKEND_API_KEY server-side (if configured).
+  - Supports multipart uploads, async jobs, zip download, and request-id pass-through.
+- Frontend routing hardening:
+  - script.js production API candidate strategy now prefers same-origin /api proxy only.
+  - Prevents accidental direct fallback to Render when API key protection is enabled.
+- Vercel config hardening:
+  - Removed /api rewrites to direct Render (proxy function now handles /api/*).
+  - Tightened CSP connect-src to 'self'.
+- Docs updated for proxy env setup:
+  - BACKEND_PROXY_TARGET and BACKEND_API_KEY in Vercel project env.
+- Cache bust updated in frontend/index.html (script.js?v=20260226sec).
+- Validation:
+  - node --check frontend/api/[...path].js passed.
+  - node --check frontend/script.js passed.
+  - vercel.json JSON validation passed.

@@ -177,7 +177,7 @@ function buildApiCandidates() {
     if (isLocalHost && isRelativePath(configuredApiBase)) {
       candidates.push("http://localhost:10000");
     } else if (!isLocalHost && isRelativePath(configuredApiBase)) {
-      candidates.push(DEFAULT_DEPLOYED_API_BASE_URL);
+      // In production we prefer same-origin /api proxy so backend keys stay server-side.
       candidates.push(configuredApiBase);
     } else {
       candidates.push(configuredApiBase);
@@ -187,7 +187,6 @@ function buildApiCandidates() {
   if (isLocalHost) {
     candidates.push("http://localhost:10000");
   } else {
-    candidates.push(DEFAULT_DEPLOYED_API_BASE_URL);
     candidates.push("/api");
   }
 
