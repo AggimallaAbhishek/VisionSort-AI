@@ -366,3 +366,20 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - PREVIEW_INLINE_MAX_FILES=0
   - UPLOAD_READ_CHUNK_KB=1024
 - Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/README.md with explicit fast-mode preview recommendations.
+[2026-02-26 23:49:33 IST] Fix: frontend /api upload network resilience hardening.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js:
+  - Increased batch retry attempts (2 -> 3) with exponential backoff.
+  - Added backend warmup probing before batch uploads to handle Render cold starts.
+  - Added warmup endpoint candidates from configured API bases and short warmup cache.
+  - Forced safer batching when using same-origin /api proxy (effective max batch files = 1).
+  - Added queue validation for per-request file size limit (MAX_REQUEST_SIZE_MB).
+  - Updated status messaging to show effective batch settings and retry delays.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/api/proxy.js:
+  - Added configurable upstream timeout (PROXY_UPSTREAM_TIMEOUT_MS, default 9000ms).
+  - Added AbortController timeout handling and explicit 504 UPSTREAM_TIMEOUT responses.
+  - Preserved stream forwarding for multipart uploads; added x-proxy-timeout-ms response header.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/vercel.json:
+  - Added functions.api/proxy.js.maxDuration=60 for longer proxy execution window.
+- Validation:
+  - node --check frontend/script.js passed.
+  - node --check frontend/api/proxy.js passed.

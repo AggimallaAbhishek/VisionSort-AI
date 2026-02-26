@@ -96,8 +96,12 @@ const ASYNC_POLL_INTERVAL_MS = 700;
 const ASYNC_TIMEOUT_MS = 8 * 60 * 1000;
 const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 18 * 1000;
 const ASYNC_QUEUE_STALL_TIMEOUT_MS = 90 * 1000;
-const BATCH_RETRY_COUNT = 2;
-const BATCH_RETRY_DELAY_MS = 1200;
+const BATCH_RETRY_COUNT = 3;
+const BATCH_RETRY_BASE_DELAY_MS = 1200;
+const BACKEND_WARMUP_ATTEMPTS = 6;
+const BACKEND_WARMUP_TIMEOUT_MS = 12 * 1000;
+const BACKEND_WARMUP_DELAY_MS = 2500;
+const BACKEND_WARMUP_CACHE_MS = 2 * 60 * 1000;
 const REQUEST_TIMEOUT_DEFAULT_MS = 75 * 1000;
 const REQUEST_TIMEOUT_BASE_MS = 90 * 1000;
 const REQUEST_TIMEOUT_PER_MB_MS = 6000;
@@ -106,6 +110,7 @@ const JOB_STATUS_TIMEOUT_MS = 12 * 1000;
 const ZIP_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_BATCH_AUTO_SPLIT_DEPTH = 2;
 const ENABLE_SYNC_FALLBACK = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const PROXY_SAFE_MAX_BATCH_FILES = 1;
 
 const dropZone = document.getElementById("dropZone");
 const imageInput = document.getElementById("imageInput");
@@ -150,6 +155,8 @@ let pseudoProgressValue = 0;
 let analysisStartedAtMs = 0;
 let analysisCompletedAtMs = 0;
 let isPreparingZip = false;
+let lastBackendWarmupAtMs = 0;
+let lastBackendWarmupEndpoint = "";
 
 function createEmptyResults() {
   return {
@@ -264,6 +271,27 @@ const API_DOWNLOAD_ZIP_ENDPOINT_CANDIDATES = prioritizeStoredEndpoint(
   buildEndpointCandidates(API_BASE_CANDIDATES, "/download/zip"),
   "visionsort_api_download_zip_endpoint"
 );
+const API_WARMUP_ENDPOINT_CANDIDATES = dedupeUrls(
+  API_BASE_CANDIDATES.flatMap((base) => {
+    const normalizedBase = normalizeApiBase(base);
+
+    if (normalizedBase === "/api") {
+      return ["/api"];
+    }
+
+    if (normalizedBase.endsWith("/api")) {
+      const baseWithoutApi = normalizedBase.slice(0, -4);
+      return [normalizedBase, baseWithoutApi || "/"];
+    }
+
+    return [`${normalizedBase}/api`, `${normalizedBase}/`];
+  })
+);
+const USES_SAME_ORIGIN_PROXY = API_BASE_CANDIDATES.includes("/api");
+const EFFECTIVE_MAX_BATCH_FILES = USES_SAME_ORIGIN_PROXY
+  ? Math.min(MAX_BATCH_FILES, PROXY_SAFE_MAX_BATCH_FILES)
+  : MAX_BATCH_FILES;
+
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -352,7 +380,7 @@ function buildUploadBatches(files) {
 
   files.forEach((file) => {
     const fileBytes = Number(file.size) || 0;
-    const wouldExceedFileCount = currentBatch.length >= MAX_BATCH_FILES;
+    const wouldExceedFileCount = currentBatch.length >= EFFECTIVE_MAX_BATCH_FILES;
     const wouldExceedRequestSize = currentBatchBytes + fileBytes > MAX_REQUEST_SIZE_BYTES;
 
     if (currentBatch.length > 0 && (wouldExceedFileCount || wouldExceedRequestSize)) {
@@ -389,6 +417,10 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_D
   } finally {
     window.clearTimeout(timeoutHandle);
   }
+}
+
+function computeRetryDelayMs(attempt) {
+  return BATCH_RETRY_BASE_DELAY_MS * Math.max(1, 2 ** Math.max(0, attempt - 1));
 }
 
 function formatElapsedDuration(ms) {
@@ -509,6 +541,84 @@ function resetProgress() {
   if (progressTime) {
     progressTime.textContent = "Elapsed: 0.0s";
   }
+}
+
+async function probeBackendEndpoint(endpoint) {
+  try {
+    const response = await fetchWithTimeout(
+      endpoint,
+      {
+        method: "GET",
+        cache: "no-store",
+      },
+      BACKEND_WARMUP_TIMEOUT_MS
+    );
+    const requestId = response.headers.get("x-request-id") || "";
+    if (!response.ok) {
+      return {
+        ok: false,
+        requestId,
+        error: await getResponseErrorMessage(response),
+      };
+    }
+
+    return {
+      ok: true,
+      requestId,
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return {
+        ok: false,
+        requestId: "",
+        error: "Warmup timed out while waiting for backend.",
+      };
+    }
+
+    return {
+      ok: false,
+      requestId: "",
+      error: error instanceof Error ? error.message : "Backend warmup failed.",
+    };
+  }
+}
+
+async function ensureBackendReady(force = false) {
+  if (!force && Date.now() - lastBackendWarmupAtMs < BACKEND_WARMUP_CACHE_MS) {
+    return {
+      ok: true,
+      endpoint: lastBackendWarmupEndpoint || API_WARMUP_ENDPOINT_CANDIDATES[0] || "/api",
+      requestId: "",
+    };
+  }
+
+  const failures = [];
+  for (let attempt = 1; attempt <= BACKEND_WARMUP_ATTEMPTS; attempt += 1) {
+    for (const endpoint of API_WARMUP_ENDPOINT_CANDIDATES) {
+      const probe = await probeBackendEndpoint(endpoint);
+      if (probe.ok) {
+        lastBackendWarmupAtMs = Date.now();
+        lastBackendWarmupEndpoint = endpoint;
+        logRequestTrace("backend-warmup", endpoint, probe.requestId, `attempt=${attempt}`);
+        return {
+          ok: true,
+          endpoint,
+          requestId: probe.requestId || "",
+        };
+      }
+
+      failures.push(`${endpoint} -> ${probe.error}`);
+    }
+
+    if (attempt < BACKEND_WARMUP_ATTEMPTS) {
+      await sleep(BACKEND_WARMUP_DELAY_MS);
+    }
+  }
+
+  return {
+    ok: false,
+    error: failures[failures.length - 1] || "Backend warmup failed.",
+  };
 }
 
 function startPseudoProgress() {
@@ -876,6 +986,13 @@ function addFilesToQueue(fileList) {
 
     if (file.size > MAX_FILE_SIZE_BYTES) {
       issues.push(`Skipped ${file.name}: larger than ${MAX_FILE_SIZE_MB}MB.`);
+      return;
+    }
+
+    if (file.size > MAX_REQUEST_SIZE_BYTES) {
+      issues.push(
+        `Skipped ${file.name}: larger than per-request limit ${MAX_REQUEST_SIZE_MB}MB (frontend batching limit).`
+      );
       return;
     }
 
@@ -1505,6 +1622,19 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
   let lastSummary = `${batchPrefix}: no reachable endpoint.`;
 
   for (let attempt = 1; attempt <= BATCH_RETRY_COUNT; attempt += 1) {
+    if (attempt === 1 || USES_SAME_ORIGIN_PROXY) {
+      const warmup = await ensureBackendReady(attempt > 1);
+      if (!warmup.ok) {
+        lastSummary = warmup.error || "Backend warmup failed.";
+        if (attempt < BATCH_RETRY_COUNT) {
+          const delayMs = computeRetryDelayMs(attempt);
+          const delaySeconds = (delayMs / 1000).toFixed(1);
+          setStatus(`${batchPrefix}: backend waking up, retrying in ${delaySeconds}s...`);
+          await sleep(delayMs);
+          continue;
+        }
+      }
+    }
     setProgress(
       clamp(Math.round(((batchIndex - 1) / totalBatches) * 100), 2, 99),
       "Queueing",
@@ -1540,8 +1670,10 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
     }
 
     if (attempt < BATCH_RETRY_COUNT) {
-      setStatus(`${batchPrefix}: network issue detected, retrying...`);
-      await sleep(BATCH_RETRY_DELAY_MS);
+      const delayMs = computeRetryDelayMs(attempt);
+      const delaySeconds = (delayMs / 1000).toFixed(1);
+      setStatus(`${batchPrefix}: network issue detected, retrying in ${delaySeconds}s...`);
+      await sleep(delayMs);
     }
   }
 
@@ -1575,7 +1707,7 @@ async function uploadImages() {
 
     if (initialBatches.length > 1) {
       setStatus(
-        `Large batch detected. Processing ${totalFileCount} files in ${initialBatches.length} batches (${MAX_BATCH_FILES} files or ${MAX_REQUEST_SIZE_MB}MB per request).`
+        `Large batch detected. Processing ${totalFileCount} files in ${initialBatches.length} batches (${EFFECTIVE_MAX_BATCH_FILES} files or ${MAX_REQUEST_SIZE_MB}MB per request).`
       );
     } else {
       setStatus(`Processing ${totalFileCount} file(s), total ${totalSizeLabel}...`);

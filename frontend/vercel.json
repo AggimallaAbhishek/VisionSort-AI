@@ -1,6 +1,11 @@
 {
   "version": 2,
   "trailingSlash": false,
+  "functions": {
+    "api/proxy.js": {
+      "maxDuration": 60
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",

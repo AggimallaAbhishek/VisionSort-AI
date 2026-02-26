@@ -13,6 +13,11 @@ const EXACT_ALLOWED_PATHS = new Set([
 
 const PREFIX_ALLOWED_PATHS = ["/jobs/", "/api/jobs/"];
 
+function parsePositiveInt(rawValue, fallback) {
+  const parsed = Number.parseInt(String(rawValue || "").trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function normalizeProxyTarget(rawTarget) {
   const value = String(rawTarget || "").trim() || DEFAULT_PROXY_TARGET;
   try {
@@ -57,6 +62,7 @@ function buildUpstreamQueryString(req) {
     if (key === "path") {
       continue;
     }
+
     if (Array.isArray(value)) {
       value.forEach((item) => {
         if (item !== undefined && item !== null) {
@@ -65,6 +71,7 @@ function buildUpstreamQueryString(req) {
       });
       continue;
     }
+
     if (value !== undefined && value !== null) {
       params.set(key, String(value));
     }
@@ -98,6 +105,8 @@ module.exports = async function handler(req, res) {
   }
 
   const targetBase = normalizeProxyTarget(process.env.BACKEND_PROXY_TARGET || DEFAULT_PROXY_TARGET);
+  const upstreamTimeoutMs = parsePositiveInt(process.env.PROXY_UPSTREAM_TIMEOUT_MS, 9000);
+
   if (!targetBase) {
     return res.status(500).json({
       error: {
@@ -140,10 +149,14 @@ module.exports = async function handler(req, res) {
     headers["x-api-key"] = apiKey;
   }
 
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), upstreamTimeoutMs);
+
   const requestOptions = {
     method,
     headers,
     redirect: "manual",
+    signal: controller.signal,
   };
 
   if (!["GET", "HEAD"].includes(method)) {
@@ -157,13 +170,19 @@ module.exports = async function handler(req, res) {
     const body = Buffer.from(await upstreamResponse.arrayBuffer());
 
     copyUpstreamHeaders(upstreamResponse, res);
+    res.setHeader("x-proxy-timeout-ms", String(upstreamTimeoutMs));
     return res.status(upstreamResponse.status).send(body);
-  } catch {
-    return res.status(502).json({
+  } catch (error) {
+    const isTimeout = error instanceof DOMException && error.name === "AbortError";
+    return res.status(isTimeout ? 504 : 502).json({
       error: {
-        code: "UPSTREAM_UNAVAILABLE",
-        message: "Backend service is unavailable.",
+        code: isTimeout ? "UPSTREAM_TIMEOUT" : "UPSTREAM_UNAVAILABLE",
+        message: isTimeout
+          ? "Backend did not respond before proxy timeout."
+          : "Backend service is unavailable.",
       },
     });
+  } finally {
+    clearTimeout(timeoutHandle);
   }
 };
