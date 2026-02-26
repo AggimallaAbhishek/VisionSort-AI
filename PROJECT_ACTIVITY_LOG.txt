@@ -321,3 +321,16 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - node --check frontend/api/[...path].js passed.
   - node --check frontend/script.js passed.
   - vercel.json JSON validation passed.
+[2026-02-26 16:54:46 IST (+0530)]
+- Fixed Vercel /api proxy routing compatibility issue.
+- Replaced dynamic proxy route with stable endpoint:
+  - removed: frontend/api/[...path].js
+  - added: frontend/api/_proxy.js
+- Updated vercel.json rewrites:
+  - /api -> /api/_proxy
+  - /api/(.*) -> /api/_proxy?path=$1
+- Proxy keeps server-side BACKEND_API_KEY injection and forwards upload/async/jobs/zip paths.
+- README updated to reference frontend/api/_proxy.js.
+- Validation:
+  - node --check frontend/api/_proxy.js passed.
+  - vercel.json JSON validation passed.

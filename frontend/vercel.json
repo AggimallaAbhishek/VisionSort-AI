@@ -39,5 +39,15 @@
         }
       ]
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/api",
+      "destination": "/api/_proxy"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/_proxy?path=$1"
+    }
   ]
 }

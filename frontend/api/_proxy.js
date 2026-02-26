@@ -29,6 +29,7 @@ function normalizeProxyTarget(rawTarget) {
 function extractPathFromRequest(req) {
   const raw = req.query?.path;
   const parts = Array.isArray(raw) ? raw : raw ? [raw] : [];
+
   const normalized = parts
     .map((part) => String(part || "").trim())
     .filter(Boolean)
@@ -46,6 +47,31 @@ function isAllowedPath(pathname) {
     return true;
   }
   return PREFIX_ALLOWED_PATHS.some((prefix) => pathname.startsWith(prefix));
+}
+
+function buildUpstreamQueryString(req) {
+  const params = new URLSearchParams();
+  const query = req.query || {};
+
+  for (const [key, value] of Object.entries(query)) {
+    if (key === "path") {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null) {
+          params.append(key, String(item));
+        }
+      });
+      continue;
+    }
+    if (value !== undefined && value !== null) {
+      params.set(key, String(value));
+    }
+  }
+
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
 }
 
 async function readRawBody(req) {
@@ -99,8 +125,7 @@ module.exports = async function handler(req, res) {
     });
   }
 
-  const queryIndex = String(req.url || "").indexOf("?");
-  const queryString = queryIndex >= 0 ? String(req.url).slice(queryIndex) : "";
+  const queryString = buildUpstreamQueryString(req);
   const upstreamUrl = `${targetBase}${upstreamPath}${queryString}`;
 
   const headers = {};
