@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import secrets
 from collections import deque
 from contextvars import ContextVar
 from io import BytesIO
@@ -26,6 +27,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, Response
 from PIL import Image
 
@@ -93,6 +95,15 @@ RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "6
 RATE_LIMIT_MAX_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "30")))
 MAX_ZIP_ITEMS = max(1, int(os.getenv("MAX_ZIP_ITEMS", "400")))
 MAX_ZIP_SOURCE_BYTES_MB = max(10, int(os.getenv("MAX_ZIP_SOURCE_BYTES_MB", "500")))
+HSTS_MAX_AGE_SECONDS = max(0, int(os.getenv("HSTS_MAX_AGE_SECONDS", "31536000")))
+SECURITY_HEADERS_ENABLED = os.getenv("SECURITY_HEADERS_ENABLED", "true").lower() == "true"
+BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "").strip()
+ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
+EXPOSE_HEALTH_DETAILS = os.getenv("EXPOSE_HEALTH_DETAILS", "true").lower() == "true"
+allowed_hosts_env = os.getenv("ALLOWED_HOSTS", "*").strip()
+allowed_hosts = [host.strip() for host in allowed_hosts_env.split(",") if host.strip()]
+if not allowed_hosts:
+    allowed_hosts = ["*"]
 MAX_ZIP_SOURCE_BYTES = MAX_ZIP_SOURCE_BYTES_MB * 1024 * 1024
 CATEGORY_KEYS = ("good", "blurry", "dark", "overexposed", "duplicates")
 ZIP_SOURCES = {"processed", "original"}
@@ -143,7 +154,13 @@ CONTENT_TYPE_TO_EXTENSION = {
     "image/gif": ".gif",
 }
 
-app = FastAPI(title="VisionSort AI", version="1.1.0")
+app = FastAPI(
+    title="VisionSort AI",
+    version="1.1.0",
+    docs_url="/docs" if ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
+)
 
 origins_env = os.getenv("ALLOWED_ORIGINS", "*").strip()
 allow_origins = [origin.strip() for origin in origins_env.split(",") if origin.strip()]
@@ -162,6 +179,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if allowed_hosts != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 aws_service = AWSService()
 persist_executor = ThreadPoolExecutor(max_workers=PERSIST_WORKERS)
@@ -186,6 +205,8 @@ RATE_LIMITED_PATHS = {
     "/download/zip",
     "/api/download/zip",
 }
+AUTH_REQUIRED_PATHS = set(RATE_LIMITED_PATHS)
+AUTH_REQUIRED_PREFIXES = ("/jobs/", "/api/jobs/")
 HTTP_ERROR_CODE_MAP = {
     400: "BAD_REQUEST",
     401: "UNAUTHORIZED",
@@ -238,6 +259,58 @@ def consume_rate_limit_token(client_ip: str) -> Tuple[bool, int]:
         return True, 0
 
 
+
+
+def requires_api_key(request: Request) -> bool:
+    """Return True when request requires API key authentication."""
+    if not BACKEND_API_KEY:
+        return False
+    if request.method.upper() == "OPTIONS":
+        return False
+    path = request.url.path
+    return path in AUTH_REQUIRED_PATHS or path.startswith(AUTH_REQUIRED_PREFIXES)
+
+
+def extract_api_key(request: Request) -> str:
+    """Read API key from x-api-key or bearer token header."""
+    direct_key = (request.headers.get("x-api-key") or "").strip()
+    if direct_key:
+        return direct_key
+
+    auth_header = (request.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return ""
+
+
+def is_https_request(request: Request) -> bool:
+    """Return True when request came via HTTPS."""
+    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return request.url.scheme == "https" or proto == "https"
+
+
+def apply_security_headers(response: Response, request: Request) -> None:
+    """Attach hardened baseline security headers."""
+    if not SECURITY_HEADERS_ENABLED:
+        return
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-site")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    )
+    if HSTS_MAX_AGE_SECONDS > 0 and is_https_request(request):
+        response.headers.setdefault(
+            "Strict-Transport-Security", f"max-age={HSTS_MAX_AGE_SECONDS}; includeSubDomains"
+        )
+
+
 def build_error_payload(
     *,
     code: str,
@@ -271,6 +344,24 @@ async def request_context_middleware(request: Request, call_next: Callable[[Requ
     rate_limited = False
 
     try:
+        if requires_api_key(request):
+            provided_api_key = extract_api_key(request)
+            if not provided_api_key or not secrets.compare_digest(provided_api_key, BACKEND_API_KEY):
+                response = JSONResponse(
+                    status_code=401,
+                    content=build_error_payload(
+                        code="UNAUTHORIZED",
+                        message="Missing or invalid API key.",
+                        request_id=request_id,
+                        details={"status_code": 401},
+                    ),
+                )
+                response.headers["WWW-Authenticate"] = "Bearer"
+                response.headers[REQUEST_ID_HEADER] = request_id
+                apply_security_headers(response, request)
+                status_code = response.status_code
+                return response
+
         if is_rate_limited_request(request):
             allowed, retry_after_seconds = consume_rate_limit_token(client_ip)
             if not allowed:
@@ -293,11 +384,13 @@ async def request_context_middleware(request: Request, call_next: Callable[[Requ
                 )
                 response.headers["Retry-After"] = str(retry_after_seconds)
                 response.headers[REQUEST_ID_HEADER] = request_id
+                apply_security_headers(response, request)
                 status_code = response.status_code
                 return response
 
         response = await call_next(request)
         response.headers[REQUEST_ID_HEADER] = request_id
+        apply_security_headers(response, request)
         status_code = response.status_code
         return response
     finally:
@@ -319,6 +412,12 @@ async def request_context_middleware(request: Request, call_next: Callable[[Requ
 @app.get("/api")
 def root() -> Dict[str, Any]:
     """Health endpoint with non-sensitive service status."""
+    if not EXPOSE_HEALTH_DETAILS:
+        return {
+            "message": "VisionSort AI backend is running.",
+            "request_id": current_request_id(),
+        }
+
     return {
         "message": "VisionSort AI backend is running.",
         "service": aws_service.health_snapshot(),
@@ -362,6 +461,14 @@ def root() -> Dict[str, Any]:
             "disable_above_files": AI_DISABLE_ABOVE_FILES,
             "min_confidence": AI_MIN_CONFIDENCE,
             "promote_good_confidence": AI_PROMOTE_GOOD_CONFIDENCE,
+        },
+        "security": {
+            "api_key_required": bool(BACKEND_API_KEY),
+            "headers_enabled": SECURITY_HEADERS_ENABLED,
+            "allowed_hosts": allowed_hosts,
+            "api_docs_enabled": ENABLE_API_DOCS,
+            "expose_health_details": EXPOSE_HEALTH_DETAILS,
+            "hsts_max_age_seconds": HSTS_MAX_AGE_SECONDS,
         },
     }
 

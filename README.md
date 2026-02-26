@@ -223,6 +223,35 @@ Optional AI + rule fusion knobs:
 - `DARK_PROMOTE_MIN_BRIGHTNESS=45` dark-to-good promotion lower bound
 - `OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS=210` overexposed-to-good promotion upper bound
 
+## Security Hardening
+
+Backend now includes additional security controls:
+
+- optional API key protection for write endpoints (`/upload`, `/upload/async`, `/download/zip`, `/jobs/*`)
+- trusted host validation (`ALLOWED_HOSTS`)
+- hardened response headers (CSP, HSTS, frame/referrer/content-type controls)
+- optional docs disablement in production (`ENABLE_API_DOCS=false`)
+- optional reduced health payload (`EXPOSE_HEALTH_DETAILS=false`)
+
+Recommended production values:
+
+```env
+ALLOWED_HOSTS=visionsort-ai.onrender.com
+BACKEND_API_KEY=<long-random-secret>
+SECURITY_HEADERS_ENABLED=true
+HSTS_MAX_AGE_SECONDS=31536000
+ENABLE_API_DOCS=false
+EXPOSE_HEALTH_DETAILS=false
+```
+
+When `BACKEND_API_KEY` is set, include it on requests:
+
+```bash
+curl -X POST "https://visionsort-ai.onrender.com/upload" \
+  -H "x-api-key: <your-secret>" \
+  -F "files=@/absolute/path/photo1.jpg"
+```
+
 ## Deploy
 
 ### Render backend
@@ -238,6 +267,12 @@ Optional AI + rule fusion knobs:
 - `DATABASE_URL`
 - `ALLOWED_ORIGINS` (include your Vercel domain)
 - `ALLOWED_ORIGIN_REGEX` (recommended: `^https://.*\\.vercel\\.app$`)
+- `ALLOWED_HOSTS` (recommended: `visionsort-ai.onrender.com`)
+- `BACKEND_API_KEY` (optional but recommended for private use)
+- `ENABLE_API_DOCS` (recommended: `false`)
+- `EXPOSE_HEALTH_DETAILS` (recommended: `false` in production)
+- `SECURITY_HEADERS_ENABLED` (recommended: `true`)
+- `HSTS_MAX_AGE_SECONDS` (recommended: `31536000`)
 - `PERSIST_TASK_TIMEOUT_SECONDS` (recommended: `30`)
 - `PERSIST_OVERALL_TIMEOUT_SECONDS` (recommended: `90`)
 - `S3_CONNECT_TIMEOUT_SECONDS` (recommended: `3`)

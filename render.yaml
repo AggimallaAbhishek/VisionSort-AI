@@ -27,6 +27,18 @@ services:
         sync: false
       - key: ALLOWED_ORIGIN_REGEX
         value: ^https://.*\\.vercel\\.app$
+      - key: ALLOWED_HOSTS
+        sync: false
+      - key: BACKEND_API_KEY
+        sync: false
+      - key: ENABLE_API_DOCS
+        value: "false"
+      - key: EXPOSE_HEALTH_DETAILS
+        value: "true"
+      - key: SECURITY_HEADERS_ENABLED
+        value: "true"
+      - key: HSTS_MAX_AGE_SECONDS
+        value: "31536000"
       - key: DEFAULT_USER_ID
         value: anonymous
       - key: BLUR_THRESHOLD

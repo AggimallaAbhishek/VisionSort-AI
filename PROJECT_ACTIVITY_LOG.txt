@@ -282,3 +282,23 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Duplicate pipeline validation (same file uploaded twice) returned expected counts:
   {'good': 1, 'blurry': 0, 'dark': 0, 'overexposed': 0, 'duplicates': 1}.
 - Outcome: hash-based duplicate detection and AI+rule arbitration both working as designed.
+[2026-02-26 15:33:28 IST (+0530)]
+- Security hardening pass across backend/frontend/deploy config.
+- Backend (`backend/main.py`):
+  - Added optional API key gate for write/status endpoints (`/upload`, `/upload/async`, `/download/zip`, `/jobs/*`).
+  - Added trusted host enforcement via `ALLOWED_HOSTS` (`TrustedHostMiddleware`).
+  - Added security headers middleware (CSP, HSTS, frame/content/referrer/policy headers).
+  - Added production docs toggle (`ENABLE_API_DOCS`) and health-detail exposure toggle (`EXPOSE_HEALTH_DETAILS`).
+- Frontend (`frontend/script.js`):
+  - Hardened API base override handling by sanitizing query/localStorage API base values.
+  - Query `?api=` override now applies only on localhost/127.0.0.1.
+- Frontend deployment (`frontend/vercel.json`):
+  - Added stricter global headers including CSP, HSTS, frame/options, and permissions policy.
+- Config docs updated:
+  - `backend/.env.example`
+  - `render.yaml`
+  - `README.md` (new security hardening section + env guidance)
+- Validation:
+  - `python3 -m py_compile backend/main.py` passed.
+  - `node --check frontend/script.js` passed.
+  - `python3 -m json.tool frontend/vercel.json` passed.

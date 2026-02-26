@@ -3,14 +3,45 @@ const metaApiBase = document
   ?.getAttribute("content")
   ?.trim();
 
-const apiOverrideFromQuery = new URLSearchParams(window.location.search).get("api")?.trim() || "";
-if (apiOverrideFromQuery) {
+function sanitizeApiBase(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) {
+    return "";
+  }
+
+  if (candidate.startsWith("/")) {
+    return candidate === "/api" ? candidate : "";
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return "";
+    }
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
+}
+
+const allowApiOverrideFromQuery = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+const rawApiOverrideFromQuery = new URLSearchParams(window.location.search).get("api")?.trim() || "";
+const apiOverrideFromQuery = allowApiOverrideFromQuery ? sanitizeApiBase(rawApiOverrideFromQuery) : "";
+if (allowApiOverrideFromQuery && apiOverrideFromQuery) {
   localStorage.setItem("visionsort_api_base_url", apiOverrideFromQuery);
 }
 
-const storedApiBase = localStorage.getItem("visionsort_api_base_url")?.trim() || "";
+const rawStoredApiBase = localStorage.getItem("visionsort_api_base_url")?.trim() || "";
+const storedApiBase = sanitizeApiBase(rawStoredApiBase);
+if (rawStoredApiBase && !storedApiBase) {
+  localStorage.removeItem("visionsort_api_base_url");
+}
 const configuredApiBase = (
-  apiOverrideFromQuery || window.VISIONSORT_API_BASE_URL || metaApiBase || storedApiBase || ""
+  apiOverrideFromQuery ||
+  sanitizeApiBase(window.VISIONSORT_API_BASE_URL || "") ||
+  sanitizeApiBase(metaApiBase || "") ||
+  storedApiBase ||
+  ""
 ).trim();
 
 const parseLimit = (value, fallback) => {
