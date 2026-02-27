@@ -420,3 +420,14 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - /Users/aggimallaabhishek/Documents/VisionSort-AI/render.yaml ASYNC_INLINE_FAST_MAX_BYTES_MB=5
   - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js SMALL_SYNC_MAX_BYTES=5MB
 - Validation: local /upload/async smoke test returned direct categorized results (no job queue) for photo1.jpg.
+[2026-02-27 21:37:50 IST] Frontend upload reliability tuning
+- Increased Vercel proxy default upstream timeout behavior in frontend/api/proxy.js:
+  - Long-running routes (/upload, /upload/async, /download/zip and /api variants) now default to 55s.
+  - Other routes default to 12s.
+  - Still overridable via PROXY_UPSTREAM_TIMEOUT_MS.
+- Improved frontend async queue handling in frontend/script.js:
+  - Replaced aggressive 40s queued-stall trigger with 4-minute queue wait ceiling.
+  - Queue state now shows explicit worker-slot wait time instead of immediate network-failure behavior.
+  - Retry messaging now distinguishes backend-busy vs network failure.
+  - Fixed warmup status text formatting bug.
+- Increased same-origin proxy batch safety cap from 1 -> 2 files per batch to reduce overhead on many small images.

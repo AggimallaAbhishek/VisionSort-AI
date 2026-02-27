@@ -13,6 +13,15 @@ const EXACT_ALLOWED_PATHS = new Set([
 
 const PREFIX_ALLOWED_PATHS = ["/jobs/", "/api/jobs/"];
 
+const LONG_RUNNING_PATHS = new Set([
+  "/upload",
+  "/api/upload",
+  "/upload/async",
+  "/api/upload/async",
+  "/download/zip",
+  "/api/download/zip",
+]);
+
 function parsePositiveInt(rawValue, fallback) {
   const parsed = Number.parseInt(String(rawValue || "").trim(), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -105,7 +114,6 @@ module.exports = async function handler(req, res) {
   }
 
   const targetBase = normalizeProxyTarget(process.env.BACKEND_PROXY_TARGET || DEFAULT_PROXY_TARGET);
-  const upstreamTimeoutMs = parsePositiveInt(process.env.PROXY_UPSTREAM_TIMEOUT_MS, 9000);
 
   if (!targetBase) {
     return res.status(500).json({
@@ -117,6 +125,11 @@ module.exports = async function handler(req, res) {
   }
 
   const upstreamPath = extractPathFromRequest(req);
+  const defaultUpstreamTimeoutMs = LONG_RUNNING_PATHS.has(upstreamPath) ? 55_000 : 12_000;
+  const upstreamTimeoutMs = parsePositiveInt(
+    process.env.PROXY_UPSTREAM_TIMEOUT_MS,
+    defaultUpstreamTimeoutMs
+  );
   if (!isAllowedPath(upstreamPath)) {
     return res.status(404).json({
       error: {

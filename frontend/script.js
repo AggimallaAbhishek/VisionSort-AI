@@ -95,24 +95,24 @@ const CATEGORY_LABELS = {
 const ASYNC_POLL_INTERVAL_MS = 700;
 const ASYNC_TIMEOUT_MS = 8 * 60 * 1000;
 const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 10 * 1000;
-const ASYNC_QUEUE_STALL_TIMEOUT_MS = 40 * 1000;
+const ASYNC_MAX_QUEUE_WAIT_MS = 4 * 60 * 1000;
 const BATCH_RETRY_COUNT = 3;
 const BATCH_RETRY_BASE_DELAY_MS = 900;
-const BACKEND_WARMUP_ATTEMPTS = 3;
-const BACKEND_WARMUP_TIMEOUT_MS = 6000;
-const BACKEND_WARMUP_DELAY_MS = 1200;
+const BACKEND_WARMUP_ATTEMPTS = 1;
+const BACKEND_WARMUP_TIMEOUT_MS = 3500;
+const BACKEND_WARMUP_DELAY_MS = 600;
 const BACKEND_WARMUP_CACHE_MS = 3 * 60 * 1000;
-const REQUEST_TIMEOUT_DEFAULT_MS = 20 * 1000;
-const REQUEST_TIMEOUT_BASE_MS = 25 * 1000;
-const REQUEST_TIMEOUT_PER_MB_MS = 2500;
-const REQUEST_TIMEOUT_MAX_MS = 3 * 60 * 1000;
+const REQUEST_TIMEOUT_DEFAULT_MS = 30 * 1000;
+const REQUEST_TIMEOUT_BASE_MS = 35 * 1000;
+const REQUEST_TIMEOUT_PER_MB_MS = 4000;
+const REQUEST_TIMEOUT_MAX_MS = 4 * 60 * 1000;
 const JOB_STATUS_TIMEOUT_MS = 8000;
 const SMALL_SYNC_MAX_FILES = 2;
 const SMALL_SYNC_MAX_BYTES = 5 * 1024 * 1024;
 const ZIP_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_BATCH_AUTO_SPLIT_DEPTH = 2;
 const ENABLE_SYNC_FALLBACK = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-const PROXY_SAFE_MAX_BATCH_FILES = 1;
+const PROXY_SAFE_MAX_BATCH_FILES = 2;
 
 const dropZone = document.getElementById("dropZone");
 const imageInput = document.getElementById("imageInput");
@@ -1498,8 +1498,14 @@ async function pollJobUntilDone(statusEndpointCandidates) {
       if (!queuedSinceMs) {
         queuedSinceMs = Date.now();
       }
-      if (Date.now() - queuedSinceMs > ASYNC_QUEUE_STALL_TIMEOUT_MS) {
-        throw new Error("Async job stayed queued too long. Falling back to direct upload.");
+      const queuedForMs = Date.now() - queuedSinceMs;
+      setProgress(12, "Queued", `Waiting for worker slot (${formatElapsedDuration(queuedForMs)} in queue)...`);
+      if (queuedForMs > ASYNC_MAX_QUEUE_WAIT_MS) {
+        throw new Error(
+          `Async job stayed queued for ${formatElapsedDuration(
+            queuedForMs
+          )}. Backend is busy. Please retry in a minute.`
+        );
       }
     } else {
       queuedSinceMs = 0;
@@ -1648,17 +1654,11 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
           ? syncFlow.failures[syncFlow.failures.length - 1]
           : lastSummary;
     }
-    if (!preferSyncFastPath && (attempt === 1 || USES_SAME_ORIGIN_PROXY)) {
+    if (!preferSyncFastPath && attempt === 1) {
       const warmup = await ensureBackendReady(attempt > 1);
       if (!warmup.ok) {
         lastSummary = warmup.error || "Backend warmup failed.";
-        if (attempt < BATCH_RETRY_COUNT) {
-          const delayMs = computeRetryDelayMs(attempt);
-          const delaySeconds = (delayMs / 1000).toFixed(1);
-          setStatus(`${batchPrefix}: backend waking up, retrying in ${delaySeconds}s...`);
-          await sleep(delayMs);
-          continue;
-        }
+        setStatus(`${batchPrefix}: backend wake-up in progress, trying upload now...`);
       }
     }
     setProgress(
@@ -1698,7 +1698,13 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
     if (attempt < BATCH_RETRY_COUNT) {
       const delayMs = computeRetryDelayMs(attempt);
       const delaySeconds = (delayMs / 1000).toFixed(1);
-      setStatus(`${batchPrefix}: network issue detected, retrying in ${delaySeconds}s...`);
+      const summary = String(lastSummary || "").toLowerCase();
+      const isBusyQueue = summary.includes("queued") || summary.includes("worker") || summary.includes("busy");
+      setStatus(
+        isBusyQueue
+          ? `${batchPrefix}: backend is busy, retrying in ${delaySeconds}s...`
+          : `${batchPrefix}: network issue detected, retrying in ${delaySeconds}s...`
+      );
       await sleep(delayMs);
     }
   }
