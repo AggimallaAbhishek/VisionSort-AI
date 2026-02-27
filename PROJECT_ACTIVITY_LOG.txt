@@ -383,3 +383,18 @@ Next Entry Placeholder (Use This Block for Future Updates)
 - Validation:
   - node --check frontend/script.js passed.
   - node --check frontend/api/proxy.js passed.
+[2026-02-27 18:09:02 IST] Backend audit: main.py and connected modules reviewed + fix applied.
+- Audited files:
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/main.py
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/aws_client.py
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/utils/blur_detection.py
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/utils/brightness_check.py
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/utils/duplicate_check.py
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/utils/model_predict.py
+- Fix in main.py (read_upload_payloads): ensured UploadFile handles are closed in spool-to-disk early-exit and exception paths.
+  - Added close calls for oversized/empty spool branches and exception path before re-raise.
+  - This prevents potential file descriptor/resource leakage under large or invalid uploads.
+- Verification:
+  - py_compile passed for main.py + connected modules.
+  - pip check passed (no broken requirements).
+  - FastAPI TestClient smoke tests passed for GET /, POST /upload, POST /upload/async.

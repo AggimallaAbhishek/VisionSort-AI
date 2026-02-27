@@ -976,6 +976,10 @@ async def read_upload_payloads(
                             "validation_error": "file_too_large",
                         }
                     )
+                    try:
+                        await upload.close()
+                    except Exception:
+                        pass
                     continue
 
                 if current_file_bytes == 0:
@@ -991,6 +995,10 @@ async def read_upload_payloads(
                             "validation_error": "empty_file",
                         }
                     )
+                    try:
+                        await upload.close()
+                    except Exception:
+                        pass
                     continue
 
             except Exception:
@@ -999,6 +1007,10 @@ async def read_upload_payloads(
                         Path(temp_path).unlink(missing_ok=True)
                     except Exception:
                         pass
+                try:
+                    await upload.close()
+                except Exception:
+                    pass
                 raise
         else:
             raw_bytes = await upload.read()
