@@ -413,3 +413,10 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - py_compile passed for backend main.py.
   - node --check passed for frontend script.js.
   - Forced-threshold local test confirmed async endpoint can return direct categorized results when fast-path conditions are met.
+[2026-02-27 20:08:41 IST] Performance tuning update: increased small-image fast-path threshold.
+- Updated thresholds from 2MB to 5MB for faster single-image handling:
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/main.py default ASYNC_INLINE_FAST_MAX_BYTES_MB=5
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/.env.example ASYNC_INLINE_FAST_MAX_BYTES_MB=5
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/render.yaml ASYNC_INLINE_FAST_MAX_BYTES_MB=5
+  - /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js SMALL_SYNC_MAX_BYTES=5MB
+- Validation: local /upload/async smoke test returned direct categorized results (no job queue) for photo1.jpg.

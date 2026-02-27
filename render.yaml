@@ -102,7 +102,7 @@ services:
       - key: ASYNC_INLINE_FAST_MAX_FILES
         value: "2"
       - key: ASYNC_INLINE_FAST_MAX_BYTES_MB
-        value: "2"
+        value: "5"
       - key: PERSIST_TASK_TIMEOUT_SECONDS
         value: "30"
       - key: PERSIST_OVERALL_TIMEOUT_SECONDS
