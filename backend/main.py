@@ -87,6 +87,9 @@ OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS = max(
 PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
+ASYNC_INLINE_FAST_MAX_FILES = max(0, int(os.getenv("ASYNC_INLINE_FAST_MAX_FILES", "2")))
+ASYNC_INLINE_FAST_MAX_BYTES_MB = max(0, int(os.getenv("ASYNC_INLINE_FAST_MAX_BYTES_MB", "5")))
+ASYNC_INLINE_FAST_MAX_BYTES = ASYNC_INLINE_FAST_MAX_BYTES_MB * 1024 * 1024
 PERSIST_WORKERS_MAX_SAFE = max(0, int(os.getenv("PERSIST_WORKERS_MAX_SAFE", "0")))
 UPLOAD_JOB_WORKERS_MAX_SAFE = max(0, int(os.getenv("UPLOAD_JOB_WORKERS_MAX_SAFE", "0")))
 PERSIST_TASK_TIMEOUT_SECONDS = max(2, int(os.getenv("PERSIST_TASK_TIMEOUT_SECONDS", "30")))
@@ -440,6 +443,8 @@ def root() -> Dict[str, Any]:
             "max_file_size_mb": MAX_FILE_SIZE_MB,
             "max_request_total_mb": MAX_REQUEST_TOTAL_MB,
             "max_files": MAX_FILES,
+            "async_inline_fast_max_files": ASYNC_INLINE_FAST_MAX_FILES,
+            "async_inline_fast_max_bytes_mb": ASYNC_INLINE_FAST_MAX_BYTES_MB,
             "max_image_width": MAX_IMAGE_WIDTH,
             "preview_max_width": PREVIEW_MAX_WIDTH,
             "preview_jpeg_quality": PREVIEW_JPEG_QUALITY,
@@ -1076,6 +1081,20 @@ async def read_upload_payloads(
     return payloads
 
 
+def payload_size_bytes(payload: UploadPayload) -> int:
+    """Return payload size in bytes regardless of spool mode."""
+    temp_path = payload.get("temp_path")
+    if temp_path:
+        try:
+            return int(Path(str(temp_path)).stat().st_size)
+        except Exception:
+            return 0
+
+    raw_bytes = payload.get("raw_bytes", b"")
+    if isinstance(raw_bytes, (bytes, bytearray)):
+        return len(raw_bytes)
+    return 0
+
 def process_upload_payloads(
     payloads: List[UploadPayload],
     progress_hook: ProgressHook | None = None,
@@ -1570,6 +1589,26 @@ async def upload_images_async(files: List[UploadFile] = File(...)) -> Dict[str, 
         raise HTTPException(status_code=400, detail=f"Too many files. Maximum allowed is {MAX_FILES}.")
 
     payloads = await read_upload_payloads(files)
+
+    valid_payloads = [payload for payload in payloads if not payload.get("validation_error")]
+    small_batch_bytes = sum(payload_size_bytes(payload) for payload in valid_payloads)
+
+    if (
+        ASYNC_INLINE_FAST_MAX_FILES > 0
+        and ASYNC_INLINE_FAST_MAX_BYTES > 0
+        and len(valid_payloads) > 0
+        and len(valid_payloads) <= ASYNC_INLINE_FAST_MAX_FILES
+        and small_batch_bytes <= ASYNC_INLINE_FAST_MAX_BYTES
+    ):
+        logger.info(
+            "Using async inline fast path for %s valid file(s), total_bytes=%s",
+            len(valid_payloads),
+            small_batch_bytes,
+        )
+        results = process_upload_payloads(payloads)
+        results["request_id"] = current_request_id()
+        return results
+
     job_id = create_upload_job(total_files=len(payloads))
     job_executor.submit(run_upload_job, job_id, payloads)
 

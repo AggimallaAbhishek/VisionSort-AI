@@ -94,19 +94,21 @@ const CATEGORY_LABELS = {
 };
 const ASYNC_POLL_INTERVAL_MS = 700;
 const ASYNC_TIMEOUT_MS = 8 * 60 * 1000;
-const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 18 * 1000;
-const ASYNC_QUEUE_STALL_TIMEOUT_MS = 90 * 1000;
+const ASYNC_STATUS_DISCOVERY_TIMEOUT_MS = 10 * 1000;
+const ASYNC_QUEUE_STALL_TIMEOUT_MS = 40 * 1000;
 const BATCH_RETRY_COUNT = 3;
-const BATCH_RETRY_BASE_DELAY_MS = 1200;
-const BACKEND_WARMUP_ATTEMPTS = 6;
-const BACKEND_WARMUP_TIMEOUT_MS = 12 * 1000;
-const BACKEND_WARMUP_DELAY_MS = 2500;
-const BACKEND_WARMUP_CACHE_MS = 2 * 60 * 1000;
-const REQUEST_TIMEOUT_DEFAULT_MS = 75 * 1000;
-const REQUEST_TIMEOUT_BASE_MS = 90 * 1000;
-const REQUEST_TIMEOUT_PER_MB_MS = 6000;
-const REQUEST_TIMEOUT_MAX_MS = 8 * 60 * 1000;
-const JOB_STATUS_TIMEOUT_MS = 12 * 1000;
+const BATCH_RETRY_BASE_DELAY_MS = 900;
+const BACKEND_WARMUP_ATTEMPTS = 3;
+const BACKEND_WARMUP_TIMEOUT_MS = 6000;
+const BACKEND_WARMUP_DELAY_MS = 1200;
+const BACKEND_WARMUP_CACHE_MS = 3 * 60 * 1000;
+const REQUEST_TIMEOUT_DEFAULT_MS = 20 * 1000;
+const REQUEST_TIMEOUT_BASE_MS = 25 * 1000;
+const REQUEST_TIMEOUT_PER_MB_MS = 2500;
+const REQUEST_TIMEOUT_MAX_MS = 3 * 60 * 1000;
+const JOB_STATUS_TIMEOUT_MS = 8000;
+const SMALL_SYNC_MAX_FILES = 2;
+const SMALL_SYNC_MAX_BYTES = 2 * 1024 * 1024;
 const ZIP_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_BATCH_AUTO_SPLIT_DEPTH = 2;
 const ENABLE_SYNC_FALLBACK = ["localhost", "127.0.0.1"].includes(window.location.hostname);
@@ -355,6 +357,10 @@ function bytesToSize(bytes) {
 
 function totalBytes(files) {
   return files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+}
+
+function isSmallSyncBatch(files) {
+  return files.length > 0 && files.length <= SMALL_SYNC_MAX_FILES && totalBytes(files) <= SMALL_SYNC_MAX_BYTES;
 }
 
 function clamp(value, min, max) {
@@ -1619,10 +1625,30 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
   const sizeLabel = bytesToSize(totalBytes(batchFiles));
   const timeoutMs = computeUploadTimeoutMs(batchFiles);
   const timeoutSeconds = Math.round(timeoutMs / 1000);
+  const preferSyncFastPath = isSmallSyncBatch(batchFiles);
+  if (preferSyncFastPath) {
+    setStatus(`${batchPrefix}: small image detected, using fast analysis path...`);
+  }
   let lastSummary = `${batchPrefix}: no reachable endpoint.`;
 
   for (let attempt = 1; attempt <= BATCH_RETRY_COUNT; attempt += 1) {
-    if (attempt === 1 || USES_SAME_ORIGIN_PROXY) {
+    if (preferSyncFastPath) {
+      const syncFlow = await runSyncUploadFlow(batchFiles, timeoutMs);
+      if (syncFlow.ok) {
+        return {
+          ok: true,
+          endpoint: syncFlow.endpoint,
+          requestId: syncFlow.requestId || "",
+          results: syncFlow.results,
+        };
+      }
+
+      lastSummary =
+        syncFlow.failures && syncFlow.failures.length
+          ? syncFlow.failures[syncFlow.failures.length - 1]
+          : lastSummary;
+    }
+    if (!preferSyncFastPath && (attempt === 1 || USES_SAME_ORIGIN_PROXY)) {
       const warmup = await ensureBackendReady(attempt > 1);
       if (!warmup.ok) {
         lastSummary = warmup.error || "Backend warmup failed.";
@@ -1651,7 +1677,7 @@ async function runSingleBatchUpload(batchFiles, batchIndex, totalBatches) {
       };
     }
 
-    if (ENABLE_SYNC_FALLBACK) {
+    if (!preferSyncFastPath && ENABLE_SYNC_FALLBACK) {
       const syncFlow = await runSyncUploadFlow(batchFiles, timeoutMs);
       if (syncFlow.ok) {
         return {

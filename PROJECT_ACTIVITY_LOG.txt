@@ -398,3 +398,18 @@ Next Entry Placeholder (Use This Block for Future Updates)
   - py_compile passed for main.py + connected modules.
   - pip check passed (no broken requirements).
   - FastAPI TestClient smoke tests passed for GET /, POST /upload, POST /upload/async.
+[2026-02-27 19:26:58 IST] Performance optimization: small-image upload acceleration.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/main.py:
+  - Added ASYNC_INLINE_FAST_MAX_FILES and ASYNC_INLINE_FAST_MAX_BYTES_MB config.
+  - Added payload_size_bytes helper for spool/raw payload sizing.
+  - Added /upload/async inline fast path: for very small valid batches, process immediately and return categorized results directly (no queued job/polling).
+  - Exposed async_inline_fast_max_* values in health limits output.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/frontend/script.js:
+  - Reduced per-request timeout baselines for faster failure/retry on tiny uploads.
+  - Added tiny-batch sync-first fast path (<=2 files and <=2MB total).
+  - Reduced warmup retry overhead and queue stall/discovery wait windows.
+- Updated /Users/aggimallaabhishek/Documents/VisionSort-AI/backend/.env.example and /Users/aggimallaabhishek/Documents/VisionSort-AI/render.yaml with new ASYNC_INLINE_FAST_* env vars.
+- Validation:
+  - py_compile passed for backend main.py.
+  - node --check passed for frontend script.js.
+  - Forced-threshold local test confirmed async endpoint can return direct categorized results when fast-path conditions are met.
