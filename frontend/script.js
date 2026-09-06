@@ -159,6 +159,25 @@ let analysisCompletedAtMs = 0;
 let isPreparingZip = false;
 let lastBackendWarmupAtMs = 0;
 let lastBackendWarmupEndpoint = "";
+let currentUploadSessionId = "";
+
+// The backend needs one id across every batch of a single upload so it can carry
+// duplicate hashes and the filename counter between requests.
+function createUploadSessionId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID().replace(/-/g, "");
+  }
+
+  const bytes = new Uint8Array(16);
+  if (window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 function createEmptyResults() {
   return {
@@ -1036,6 +1055,9 @@ function clearQueue(options = {}) {
 function buildFormData(files) {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
+  if (currentUploadSessionId) {
+    formData.append("session_id", currentUploadSessionId);
+  }
   return formData;
 }
 
@@ -1072,6 +1094,8 @@ function buildServerZipPayload(categories, zipNameBase) {
       renamed_file_name: item.renamed_file_name || item.file_name || null,
       storage_path: item.storage_path || null,
       processed_storage_path: item.processed_storage_path || null,
+      storage_token: item.storage_token || null,
+      processed_storage_token: item.processed_storage_token || null,
       final_status: item.final_status || categoryKey,
     }));
   });
@@ -1721,6 +1745,7 @@ async function uploadImages() {
   }
 
   clearError();
+  currentUploadSessionId = createUploadSessionId();
   setUploadingState(true);
   startAnalysisClock();
   setProgress(2, "Queueing", "Preparing files for analysis...");

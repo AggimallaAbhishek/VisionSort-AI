@@ -25,7 +25,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import cv2
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -96,6 +96,10 @@ OVEREXPOSED_PROMOTE_MAX_BRIGHTNESS = max(
 PERSIST_WORKERS = max(1, int(os.getenv("PERSIST_WORKERS", "6")))
 UPLOAD_JOB_WORKERS = max(1, int(os.getenv("UPLOAD_JOB_WORKERS", "2")))
 JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
+# The frontend splits an upload into batches of 2 files, so one user action arrives as
+# many requests. Duplicate hashes and the filename counter must span them.
+SESSION_RETENTION_SECONDS = max(60, int(os.getenv("SESSION_RETENTION_SECONDS", "1800")))
+MAX_TRACKED_SESSIONS = max(16, int(os.getenv("MAX_TRACKED_SESSIONS", "500")))
 ASYNC_INLINE_FAST_MAX_FILES = max(0, int(os.getenv("ASYNC_INLINE_FAST_MAX_FILES", "2")))
 ASYNC_INLINE_FAST_MAX_BYTES_MB = max(0, int(os.getenv("ASYNC_INLINE_FAST_MAX_BYTES_MB", "5")))
 ASYNC_INLINE_FAST_MAX_BYTES = ASYNC_INLINE_FAST_MAX_BYTES_MB * 1024 * 1024
@@ -212,6 +216,8 @@ UploadPayload = Dict[str, Any]
 ProgressHook = Callable[[int, int, str, str], None]
 upload_jobs: Dict[str, Dict[str, Any]] = {}
 upload_jobs_lock = Lock()
+upload_sessions: Dict[str, Dict[str, Any]] = {}
+upload_sessions_lock = Lock()
 predict_quality_func: Callable[[Image.Image], Any] | None = None
 predict_quality_init_attempted = False
 rate_limit_events: Dict[str, deque[float]] = {}
@@ -1209,13 +1215,60 @@ def payload_size_bytes(payload: UploadPayload) -> int:
         return len(raw_bytes)
     return 0
 
+SESSION_ID_PATTERN = re.compile(r"^[0-9a-f]{8,64}$")
+
+
+def new_upload_session_id() -> str:
+    """Create an id that ties the batches of a single user upload together."""
+    return uuid.uuid4().hex
+
+
+def normalize_session_id(raw_session_id: Any) -> str:
+    """Return a safe session id, or empty when absent or malformed."""
+    candidate = str(raw_session_id or "").strip().lower()
+    return candidate if SESSION_ID_PATTERN.match(candidate) else ""
+
+
+def _evict_expired_sessions_unlocked() -> None:
+    cutoff = time.time() - SESSION_RETENTION_SECONDS
+    for session_id in [sid for sid, entry in upload_sessions.items() if entry["updated_unix"] < cutoff]:
+        upload_sessions.pop(session_id, None)
+
+    # Hard cap so a flood of ids cannot grow the registry without bound.
+    overflow = len(upload_sessions) - MAX_TRACKED_SESSIONS
+    if overflow > 0:
+        oldest = sorted(upload_sessions.items(), key=lambda item: item[1]["updated_unix"])
+        for session_id, _ in oldest[:overflow]:
+            upload_sessions.pop(session_id, None)
+
+
+def acquire_upload_session(session_id: str) -> Dict[str, Any] | None:
+    """Fetch or create the shared state for a session, evicting stale entries first."""
+    if not session_id:
+        return None
+
+    with upload_sessions_lock:
+        _evict_expired_sessions_unlocked()
+        session = upload_sessions.get(session_id)
+        if session is None:
+            session = {"hashes": [], "next_index": 1, "updated_unix": time.time()}
+            upload_sessions[session_id] = session
+        else:
+            session["updated_unix"] = time.time()
+        return session
+
+
 def process_upload_payloads(
     payloads: List[UploadPayload],
     progress_hook: ProgressHook | None = None,
+    session_id: str = "",
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Process image payloads and return categorized results."""
     results = build_results_template()
-    seen_hashes: List[Any] = []
+    session = acquire_upload_session(normalize_session_id(session_id))
+    # Without a session the caller's batches cannot be linked, so dedupe is batch-local
+    # and filenames need a discriminator to stay unique across requests.
+    seen_hashes: List[Any] = session["hashes"] if session else []
     metadata_rows: List[Dict[str, Any]] = []
     active_persistence_tasks: Dict[Future[Tuple[str | None, str | None]], Tuple[Dict[str, Any], str]] = {}
     processed_count = 0
@@ -1228,6 +1281,7 @@ def process_upload_payloads(
     s3_persistence_enabled = aws_service.s3_enabled
     request_batch_id = f"req_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     object_date_prefix = datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    batch_discriminator = "" if session else f"_{request_batch_id[-8:]}"
 
     def resolve_persistence_future(
         future: Future[Tuple[str | None, str | None]],
@@ -1317,7 +1371,16 @@ def process_upload_payloads(
             processed_count += 1
 
             renamed_extension = resolve_extension(content_type, original_file_name)
-            renamed_file_name = f"{RENAMED_FILE_PREFIX}{processed_count}{renamed_extension}"
+            if session:
+                with upload_sessions_lock:
+                    file_index = session["next_index"]
+                    session["next_index"] = file_index + 1
+                    session["updated_unix"] = time.time()
+            else:
+                file_index = processed_count
+            renamed_file_name = (
+                f"{RENAMED_FILE_PREFIX}{file_index}{batch_discriminator}{renamed_extension}"
+            )
             storage_folder = f"{final_status}/{object_date_prefix}/{request_batch_id}"
 
             preview_bytes = b""
@@ -1472,7 +1535,7 @@ def get_upload_job_snapshot(job_id: str) -> Dict[str, Any] | None:
         return {key: value for key, value in job.items() if not key.startswith("_")}
 
 
-def run_upload_job(job_id: str, payloads: List[UploadPayload]) -> None:
+def run_upload_job(job_id: str, payloads: List[UploadPayload], session_id: str = "") -> None:
     """Execute a background upload job and update progress state."""
     update_upload_job(
         job_id,
@@ -1511,7 +1574,7 @@ def run_upload_job(job_id: str, payloads: List[UploadPayload]) -> None:
         )
 
     try:
-        results = process_upload_payloads(payloads, progress_hook=progress_hook)
+        results = process_upload_payloads(payloads, progress_hook=progress_hook, session_id=session_id)
         update_upload_job(
             job_id,
             status="completed",
@@ -1548,7 +1611,10 @@ def run_upload_job(job_id: str, payloads: List[UploadPayload]) -> None:
 
 @app.post("/upload")
 @app.post("/api/upload")
-async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
+async def upload_images(
+    files: List[UploadFile] = File(...),
+    session_id: str = Form(""),
+) -> Dict[str, Any]:
     """Process uploaded files synchronously and return categorized payloads."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
@@ -1558,12 +1624,30 @@ async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
     payloads = await read_upload_payloads(files)
     # cv2 decode and torch inference are CPU-bound; running them inline in an
     # `async def` handler stalls every other request on the worker.
-    results = await run_in_threadpool(process_upload_payloads, payloads)
+    results = await run_in_threadpool(process_upload_payloads, payloads, session_id=session_id)
     results["request_id"] = current_request_id()
     return results
 
 
 ZIP_STREAM_CHUNK_BYTES = 256 * 1024
+ZIP_SPOOL_PREFIX = "visionsort_zip_"
+ZIP_SPOOL_MAX_AGE_SECONDS = max(60, int(os.getenv("ZIP_SPOOL_MAX_AGE_SECONDS", "900")))
+
+
+def sweep_abandoned_zip_spools() -> None:
+    """Delete spooled archives orphaned by a client that never read the response."""
+    cutoff = time.time() - ZIP_SPOOL_MAX_AGE_SECONDS
+    try:
+        candidates = list(Path(tempfile.gettempdir()).glob(f"{ZIP_SPOOL_PREFIX}*.zip"))
+    except OSError:
+        return
+
+    for candidate in candidates:
+        try:
+            if candidate.stat().st_mtime < cutoff:
+                candidate.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 def build_results_zip(
@@ -1597,7 +1681,8 @@ def build_results_zip(
     source_field = "processed_storage_path" if source == "processed" else "storage_path"
     token_field = "processed_storage_token" if source == "processed" else "storage_token"
 
-    temp_file = tempfile.NamedTemporaryFile(prefix="visionsort_zip_", suffix=".zip", delete=False)
+    sweep_abandoned_zip_spools()
+    temp_file = tempfile.NamedTemporaryFile(prefix=ZIP_SPOOL_PREFIX, suffix=".zip", delete=False)
     temp_path = temp_file.name
 
     try:
@@ -1784,7 +1869,10 @@ async def download_results_zip(request: Request) -> Response:
 
 @app.post("/upload/async")
 @app.post("/api/upload/async")
-async def upload_images_async(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
+async def upload_images_async(
+    files: List[UploadFile] = File(...),
+    session_id: str = Form(""),
+) -> Dict[str, Any]:
     """Queue uploaded files for background processing and return a job id."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
@@ -1808,12 +1896,12 @@ async def upload_images_async(files: List[UploadFile] = File(...)) -> Dict[str, 
             len(valid_payloads),
             small_batch_bytes,
         )
-        results = await run_in_threadpool(process_upload_payloads, payloads)
+        results = await run_in_threadpool(process_upload_payloads, payloads, session_id=session_id)
         results["request_id"] = current_request_id()
         return results
 
     job_id = create_upload_job(total_files=len(payloads))
-    job_executor.submit(run_upload_job, job_id, payloads)
+    job_executor.submit(run_upload_job, job_id, payloads, session_id)
 
     return {
         "job_id": job_id,

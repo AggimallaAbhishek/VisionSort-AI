@@ -1,3 +1,6 @@
+const { Readable } = require("node:stream");
+const { pipeline } = require("node:stream/promises");
+
 const DEFAULT_PROXY_TARGET = "https://visionsort-ai.onrender.com";
 
 const EXACT_ALLOWED_PATHS = new Set([
@@ -94,6 +97,7 @@ function copyUpstreamHeaders(upstreamResponse, res) {
   const headerNames = [
     "content-type",
     "content-disposition",
+    "content-length",
     "cache-control",
     "x-request-id",
     "retry-after",
@@ -180,13 +184,25 @@ module.exports = async function handler(req, res) {
 
   try {
     const upstreamResponse = await fetch(upstreamUrl, requestOptions);
-    const body = Buffer.from(await upstreamResponse.arrayBuffer());
 
     copyUpstreamHeaders(upstreamResponse, res);
     res.setHeader("x-proxy-timeout-ms", String(upstreamTimeoutMs));
-    return res.status(upstreamResponse.status).send(body);
+    res.status(upstreamResponse.status);
+
+    if (!upstreamResponse.body) {
+      return res.end();
+    }
+
+    // Stream rather than buffer: a ZIP download would otherwise be held whole in
+    // this function's memory on top of the backend already having built it.
+    await pipeline(Readable.fromWeb(upstreamResponse.body), res);
+    return undefined;
   } catch (error) {
     const isTimeout = error instanceof DOMException && error.name === "AbortError";
+    if (res.headersSent) {
+      res.destroy(error);
+      return undefined;
+    }
     return res.status(isTimeout ? 504 : 502).json({
       error: {
         code: isTimeout ? "UPSTREAM_TIMEOUT" : "UPSTREAM_UNAVAILABLE",

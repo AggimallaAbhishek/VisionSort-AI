@@ -97,15 +97,22 @@ class TestD4ZipMemory:
         )
 
         assert isinstance(response, StreamingResponse), "ZIP must stream, not buffer getvalue()"
+        await response.body_iterator.aclose()  # release the spooled file
 
     @pytest.mark.asyncio
     async def test_streamed_archive_is_valid_and_cleans_up(self, app_main, monkeypatch):
         service = _enable_s3(app_main)
         monkeypatch.setattr(service, "download_s3_uri", lambda uri: b"IMAGE-BYTES")
 
+        spool_dir = app_main.Path(app_main.tempfile.gettempdir())
+        before = set(spool_dir.glob("visionsort_zip_*"))
+
         response = await app_main.download_results_zip(
             _json_request(app_main, _zip_payload(app_main, count=3))
         )
+        spooled = set(spool_dir.glob("visionsort_zip_*")) - before
+        assert len(spooled) == 1, "the archive must be spooled to exactly one temp file"
+
         body = b"".join([chunk async for chunk in response.body_iterator])
 
         with zipfile.ZipFile(io.BytesIO(body)) as archive:
@@ -113,7 +120,7 @@ class TestD4ZipMemory:
             names = archive.namelist()
         assert any(n.startswith("good/") for n in names)
         assert "manifest.json" in names
-        assert not list(app_main.Path(app_main.tempfile.gettempdir()).glob("visionsort_zip_*")), (
+        assert not [path for path in spooled if path.exists()], (
             "spooled ZIP temp file must be removed once the response is consumed"
         )
 
@@ -137,7 +144,7 @@ def _async(value):
 
 
 def _blocking_processor(seconds: float):
-    def processor(payloads, progress_hook=None):
+    def processor(payloads, progress_hook=None, session_id=""):
         time.sleep(seconds)  # stands in for cv2 + torch CPU work
         return {key: [] for key in ("good", "blurry", "dark", "overexposed", "duplicates")}
     return processor
@@ -160,7 +167,7 @@ def _zip_payload(app_main, count: int) -> dict:
             {
                 "renamed_file_name": f"vin_img{index}.jpg",
                 "processed_storage_path": uri,
-                "storage_token": app_main.sign_storage_uri(uri),
+                "processed_storage_token": app_main.sign_storage_uri(uri),
                 "final_status": "good",
             }
         )
