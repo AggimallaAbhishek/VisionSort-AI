@@ -31,6 +31,8 @@ services:
         sync: false
       - key: BACKEND_API_KEY
         sync: false
+      - key: STORAGE_TOKEN_SECRET
+        generateValue: true
       - key: ENABLE_API_DOCS
         value: "false"
       - key: EXPOSE_HEALTH_DETAILS
@@ -47,6 +49,8 @@ services:
         value: "5"
       - key: MAX_IMAGE_WIDTH
         value: "1024"
+      - key: MAX_IMAGE_PIXELS
+        value: "40000000"
       - key: PREVIEW_MAX_WIDTH
         value: "640"
       - key: PREVIEW_JPEG_QUALITY
@@ -124,4 +128,4 @@ services:
       - key: MAX_ZIP_ITEMS
         value: "400"
       - key: MAX_ZIP_SOURCE_BYTES_MB
-        value: "500"
+        value: "64"

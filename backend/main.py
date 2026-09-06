@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import secrets
 from collections import deque
@@ -28,7 +29,8 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from PIL import Image
 
 from aws_client import AWSService
@@ -39,6 +41,9 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Keep PIL's built-in bomb guard from firing before ours, and from being laxer.
+Image.MAX_IMAGE_PIXELS = None
 
 
 def _detect_total_memory_mb() -> int:
@@ -56,6 +61,10 @@ def _detect_total_memory_mb() -> int:
 BLUR_THRESHOLD = float(os.getenv("BLUR_THRESHOLD", "100"))
 DUPLICATE_HASH_DISTANCE = int(os.getenv("DUPLICATE_HASH_DISTANCE", "5"))
 MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "1024"))
+# Upper bound on decoded pixels. A flat 20000x20000 PNG is ~1 MB on the wire but
+# expands to 1.2 GB of uint8 BGR, which OOM-kills a small instance before any
+# size limit applies. 40 MP covers any phone or DSLR photo.
+MAX_IMAGE_PIXELS = max(0, int(os.getenv("MAX_IMAGE_PIXELS", "40000000")))
 PREVIEW_MAX_WIDTH = int(os.getenv("PREVIEW_MAX_WIDTH", "640"))
 PREVIEW_JPEG_QUALITY = max(30, min(95, int(os.getenv("PREVIEW_JPEG_QUALITY", "70"))))
 INCLUDE_PREVIEW_DATA_URL = os.getenv("INCLUDE_PREVIEW_DATA_URL", "true").lower() == "true"
@@ -97,10 +106,12 @@ PERSIST_OVERALL_TIMEOUT_SECONDS = max(15, int(os.getenv("PERSIST_OVERALL_TIMEOUT
 RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60")))
 RATE_LIMIT_MAX_REQUESTS = max(1, int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "30")))
 MAX_ZIP_ITEMS = max(1, int(os.getenv("MAX_ZIP_ITEMS", "400")))
-MAX_ZIP_SOURCE_BYTES_MB = max(10, int(os.getenv("MAX_ZIP_SOURCE_BYTES_MB", "500")))
+MAX_ZIP_SOURCE_BYTES_MB = max(10, int(os.getenv("MAX_ZIP_SOURCE_BYTES_MB", "64")))
 HSTS_MAX_AGE_SECONDS = max(0, int(os.getenv("HSTS_MAX_AGE_SECONDS", "31536000")))
 SECURITY_HEADERS_ENABLED = os.getenv("SECURITY_HEADERS_ENABLED", "true").lower() == "true"
 BACKEND_API_KEY = os.getenv("BACKEND_API_KEY", "").strip()
+# Signs the storage paths handed to clients so they cannot be swapped for other keys.
+STORAGE_TOKEN_SECRET = os.getenv("STORAGE_TOKEN_SECRET", "").strip() or BACKEND_API_KEY
 ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
 EXPOSE_HEALTH_DETAILS = os.getenv("EXPOSE_HEALTH_DETAILS", "true").lower() == "true"
 allowed_hosts_env = os.getenv("ALLOWED_HOSTS", "*").strip()
@@ -115,6 +126,14 @@ if PERSIST_WORKERS_MAX_SAFE > 0:
     PERSIST_WORKERS = min(PERSIST_WORKERS, PERSIST_WORKERS_MAX_SAFE)
 if UPLOAD_JOB_WORKERS_MAX_SAFE > 0:
     UPLOAD_JOB_WORKERS = min(UPLOAD_JOB_WORKERS, UPLOAD_JOB_WORKERS_MAX_SAFE)
+
+if not STORAGE_TOKEN_SECRET:
+    STORAGE_TOKEN_SECRET = secrets.token_urlsafe(32)
+    logger.warning(
+        "STORAGE_TOKEN_SECRET is unset; using an ephemeral per-process secret. "
+        "ZIP downloads will stop working for results issued before a restart. "
+        "Set STORAGE_TOKEN_SECRET in production."
+    )
 
 TOTAL_MEMORY_MB = _detect_total_memory_mb()
 if ENABLE_AI_LABEL and DISABLE_AI_ON_LOW_MEMORY and TOTAL_MEMORY_MB and TOTAL_MEMORY_MB < LOW_MEMORY_RAM_MB_THRESHOLD:
@@ -566,6 +585,58 @@ def sanitize_archive_filename(filename: str, fallback: str) -> str:
     return f"{stem}{ext}"
 
 
+class StoragePathNotAuthorized(Exception):
+    """Raised when a client-supplied storage path is not one this server issued."""
+
+
+# Mirrors the layout written by persist_artifacts: <status>/<YYYY>/<MM>/<DD>/<batch>/<name>
+STORAGE_KEY_PATTERN = re.compile(
+    r"^(?:good|blurry|dark|overexposed|duplicates)/"
+    r"\d{4}/\d{2}/\d{2}/"
+    r"req_[0-9A-Za-z_]+/"
+    r"[0-9A-Za-z._-]+$"
+)
+
+
+def sign_storage_uri(s3_uri: str) -> str:
+    """Return a short HMAC binding a client to one specific S3 object."""
+    digest = hmac.new(
+        STORAGE_TOKEN_SECRET.encode("utf-8"),
+        (s3_uri or "").strip().encode("utf-8"),
+        "sha256",
+    ).hexdigest()
+    return digest[:32]
+
+
+def authorize_storage_uri(s3_uri: str, token: str) -> Tuple[str, str]:
+    """Verify a client-supplied S3 URI and return its (bucket, key).
+
+    The bucket allow-list alone is not enough: it lets any caller read every object in
+    the bucket by supplying a different key. The token proves this server issued the
+    path, and the key pattern is a second layer in case the secret ever leaks.
+    """
+    uri = (s3_uri or "").strip()
+    supplied = (token or "").strip()
+    if not uri or not supplied:
+        raise StoragePathNotAuthorized("Storage path is missing its authorization token.")
+
+    if not hmac.compare_digest(supplied, sign_storage_uri(uri)):
+        raise StoragePathNotAuthorized("Storage path token is invalid.")
+
+    try:
+        bucket, key = aws_service.parse_s3_uri(uri)
+    except ValueError as exc:
+        raise StoragePathNotAuthorized("Storage path is malformed.") from exc
+
+    if bucket not in {aws_service.uploads_bucket, aws_service.processed_bucket} or not bucket:
+        raise StoragePathNotAuthorized("Storage path targets an unknown bucket.")
+
+    if not STORAGE_KEY_PATTERN.match(key):
+        raise StoragePathNotAuthorized("Storage path does not match the analysis layout.")
+
+    return bucket, key
+
+
 def normalize_zip_categories(categories: Any, results: Dict[str, Any]) -> List[str]:
     """Normalize user-requested categories for server-side ZIP generation."""
     if not categories:
@@ -599,20 +670,59 @@ def resolve_content_type(upload: UploadFile, filename: str) -> Optional[str]:
     return None
 
 
+def ensure_decodable_size(raw_bytes: bytes) -> None:
+    """Reject decompression bombs before any full-size pixel buffer is allocated.
+
+    PIL parses only the header here, so the dimensions are known without decoding.
+    OpenCV has no equivalent guard, which is why this runs before `cv2.imdecode`.
+    """
+    if MAX_IMAGE_PIXELS <= 0:
+        return
+
+    try:
+        with Image.open(BytesIO(raw_bytes)) as probe:
+            width, height = probe.size
+    except Image.DecompressionBombError as exc:
+        raise ValueError("Image is too large to decode safely.") from exc
+    except Exception:
+        # Unknown to PIL but possibly decodable by OpenCV. The post-decode check below
+        # still bounds this path.
+        return
+
+    pixels = int(width) * int(height)
+    if pixels > MAX_IMAGE_PIXELS:
+        raise ValueError(
+            f"Image is too large to decode safely: {width}x{height} = {pixels} pixels "
+            f"exceeds the {MAX_IMAGE_PIXELS} pixel limit."
+        )
+
+
 def decode_image(raw_bytes: bytes) -> np.ndarray:
-    """Decode image bytes to an OpenCV BGR array."""
+    """Decode image bytes to an OpenCV BGR array within the pixel budget."""
+    ensure_decodable_size(raw_bytes)
+
     arr = np.frombuffer(raw_bytes, dtype=np.uint8)
     image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if image is not None:
-        return image
 
-    # Fallback decoder for images that OpenCV fails to parse directly.
-    try:
-        with Image.open(BytesIO(raw_bytes)) as pil_img:
-            rgb = pil_img.convert("RGB")
-        return cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
-    except Exception as exc:
-        raise ValueError("Failed to decode image bytes.") from exc
+    if image is None:
+        # Fallback decoder for images that OpenCV fails to parse directly.
+        try:
+            with Image.open(BytesIO(raw_bytes)) as pil_img:
+                rgb = pil_img.convert("RGB")
+            image = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
+        except Exception as exc:
+            raise ValueError("Failed to decode image bytes.") from exc
+
+    # Defense in depth: covers formats the PIL header probe could not read.
+    if MAX_IMAGE_PIXELS > 0 and image.shape[0] * image.shape[1] > MAX_IMAGE_PIXELS:
+        height, width = image.shape[:2]
+        del image
+        raise ValueError(
+            f"Image is too large to decode safely: {width}x{height} exceeds the "
+            f"{MAX_IMAGE_PIXELS} pixel limit."
+        )
+
+    return image
 
 
 def resize_image(image: np.ndarray, max_width: int) -> np.ndarray:
@@ -799,6 +909,10 @@ def build_item_payload(
         "preview_data_url": preview_data_url,
         "storage_path": storage_path,
         "processed_storage_path": processed_storage_path,
+        "storage_token": sign_storage_uri(storage_path) if storage_path else None,
+        "processed_storage_token": (
+            sign_storage_uri(processed_storage_path) if processed_storage_path else None
+        ),
     }
 
 
@@ -1124,6 +1238,10 @@ def process_upload_payloads(
             uploads_storage_path, processed_storage_path = future.result()
             item["storage_path"] = uploads_storage_path
             item["processed_storage_path"] = processed_storage_path
+            item["storage_token"] = sign_storage_uri(uploads_storage_path) if uploads_storage_path else None
+            item["processed_storage_token"] = (
+                sign_storage_uri(processed_storage_path) if processed_storage_path else None
+            )
         except Exception as exc:
             logger.exception("Persistence task failed for %s: %s", file_name, exc)
 
@@ -1438,15 +1556,174 @@ async def upload_images(files: List[UploadFile] = File(...)) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"Too many files. Maximum allowed is {MAX_FILES}.")
 
     payloads = await read_upload_payloads(files)
-    results = process_upload_payloads(payloads)
+    # cv2 decode and torch inference are CPU-bound; running them inline in an
+    # `async def` handler stalls every other request on the worker.
+    results = await run_in_threadpool(process_upload_payloads, payloads)
     results["request_id"] = current_request_id()
     return results
+
+
+ZIP_STREAM_CHUNK_BYTES = 256 * 1024
+
+
+def build_results_zip(
+    *,
+    categories: List[str],
+    results: Dict[str, Any],
+    source: str,
+    include_manifest: bool,
+    request_id: str,
+) -> Tuple[str, int]:
+    """Download the requested objects into a spooled ZIP on disk.
+
+    Returns (temp_path, downloaded_count). Synchronous by design: boto3 blocks, so the
+    caller runs this in a threadpool. The archive goes to a temp file rather than a
+    BytesIO because `getvalue()` doubles peak memory on an instance that cannot spare it.
+    """
+    downloaded_count = 0
+    scanned_item_count = 0
+    downloaded_source_bytes = 0
+    archive_names: set[str] = set()
+    manifest: Dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id,
+        "source": source,
+        "categories": {},
+        "limits": {
+            "max_zip_items": MAX_ZIP_ITEMS,
+            "max_source_bytes_mb": MAX_ZIP_SOURCE_BYTES_MB,
+        },
+    }
+    source_field = "processed_storage_path" if source == "processed" else "storage_path"
+    token_field = "processed_storage_token" if source == "processed" else "storage_token"
+
+    temp_file = tempfile.NamedTemporaryFile(prefix="visionsort_zip_", suffix=".zip", delete=False)
+    temp_path = temp_file.name
+
+    try:
+        with temp_file, ZipFile(temp_file, mode="w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
+            for category in categories:
+                raw_items = results.get(category, [])
+                if not isinstance(raw_items, list):
+                    continue
+
+                category_manifest: Dict[str, Any] = {
+                    "requested": len(raw_items),
+                    "downloaded": 0,
+                    "skipped": [],
+                }
+                manifest["categories"][category] = category_manifest
+
+                if not raw_items:
+                    archive.writestr(f"{category}/README.txt", "No analyzed images in this category.")
+                    continue
+
+                for index, raw_item in enumerate(raw_items, start=1):
+                    scanned_item_count += 1
+                    if scanned_item_count > MAX_ZIP_ITEMS:
+                        category_manifest["skipped"].append(
+                            {"index": index, "reason": f"Exceeded max ZIP items limit ({MAX_ZIP_ITEMS})."}
+                        )
+                        continue
+
+                    if not isinstance(raw_item, dict):
+                        category_manifest["skipped"].append(
+                            {"index": index, "reason": "Invalid result item payload."}
+                        )
+                        continue
+
+                    s3_uri = str(raw_item.get(source_field) or "").strip()
+                    if not s3_uri:
+                        category_manifest["skipped"].append(
+                            {"index": index, "reason": f"Missing `{source_field}` in result item."}
+                        )
+                        continue
+
+                    try:
+                        authorize_storage_uri(s3_uri, str(raw_item.get(token_field) or ""))
+                    except StoragePathNotAuthorized as exc:
+                        logger.warning(
+                            "Rejected unauthorized ZIP storage path request_id=%s category=%s: %s",
+                            request_id,
+                            category,
+                            exc,
+                        )
+                        category_manifest["skipped"].append(
+                            {"index": index, "reason": "Storage path is not authorized for this result."}
+                        )
+                        continue
+
+                    try:
+                        object_bytes = aws_service.download_s3_uri(s3_uri)
+                    except Exception as exc:
+                        logger.warning("ZIP download skipped for %s (%s): %s", category, s3_uri, exc)
+                        category_manifest["skipped"].append(
+                            {"index": index, "reason": "Unable to download source object."}
+                        )
+                        continue
+
+                    downloaded_source_bytes += len(object_bytes)
+                    if downloaded_source_bytes > MAX_ZIP_SOURCE_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"ZIP source size exceeded limit of {MAX_ZIP_SOURCE_BYTES_MB} MB. "
+                                "Reduce selected images and retry."
+                            ),
+                        )
+
+                    original_name = str(
+                        raw_item.get("renamed_file_name") or raw_item.get("file_name") or ""
+                    ).strip()
+                    fallback_name = f"{category}_{index:03d}.jpg"
+                    archive_name = sanitize_archive_filename(original_name, fallback_name)
+                    archive_path = f"{category}/{archive_name}"
+
+                    suffix = 1
+                    while archive_path in archive_names:
+                        stem = Path(archive_name).stem
+                        ext = Path(archive_name).suffix or ".jpg"
+                        archive_name = sanitize_archive_filename(f"{stem}_{suffix}{ext}", fallback_name)
+                        archive_path = f"{category}/{archive_name}"
+                        suffix += 1
+
+                    archive_names.add(archive_path)
+                    archive.writestr(archive_path, object_bytes)
+                    del object_bytes
+                    downloaded_count += 1
+                    category_manifest["downloaded"] += 1
+
+            if include_manifest:
+                manifest["downloaded_files"] = downloaded_count
+                archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+    except BaseException:
+        Path(temp_path).unlink(missing_ok=True)
+        raise
+
+    return temp_path, downloaded_count
+
+
+def stream_and_remove(temp_path: str):
+    """Yield a spooled file in chunks, then delete it however the stream ends."""
+
+    def iterator():
+        try:
+            with open(temp_path, "rb") as handle:
+                while True:
+                    chunk = handle.read(ZIP_STREAM_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+
+    return iterator()
 
 
 @app.post("/download/zip")
 @app.post("/api/download/zip")
 async def download_results_zip(request: Request) -> Response:
-    """Build and return a ZIP file from persisted S3 objects in analysis results."""
+    """Build and stream a ZIP from the persisted S3 objects in an analysis result."""
     if not aws_service.s3_enabled:
         raise HTTPException(status_code=503, detail="S3 is not configured for ZIP downloads.")
 
@@ -1474,109 +1751,35 @@ async def download_results_zip(request: Request) -> Response:
     zip_base_name = zip_base_name or "visionsort_folders"
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     download_file_name = f"{zip_base_name}_{timestamp}.zip"
+    request_id = current_request_id()
 
-    downloaded_count = 0
-    scanned_item_count = 0
-    downloaded_source_bytes = 0
-    archive_names: set[str] = set()
-    manifest: Dict[str, Any] = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "request_id": current_request_id(),
-        "source": source,
-        "categories": {},
-        "limits": {
-            "max_zip_items": MAX_ZIP_ITEMS,
-            "max_source_bytes_mb": MAX_ZIP_SOURCE_BYTES_MB,
-        },
-    }
-    source_field = "processed_storage_path" if source == "processed" else "storage_path"
-
-    zip_buffer = BytesIO()
-    with ZipFile(zip_buffer, mode="w", compression=ZIP_DEFLATED, compresslevel=6) as archive:
-        for category in categories:
-            raw_items = results.get(category, [])
-            if not isinstance(raw_items, list):
-                continue
-
-            category_manifest = {"requested": len(raw_items), "downloaded": 0, "skipped": []}
-            manifest["categories"][category] = category_manifest
-
-            if not raw_items:
-                archive.writestr(f"{category}/README.txt", "No analyzed images in this category.")
-                continue
-
-            for index, raw_item in enumerate(raw_items, start=1):
-                scanned_item_count += 1
-                if scanned_item_count > MAX_ZIP_ITEMS:
-                    category_manifest["skipped"].append(
-                        {
-                            "index": index,
-                            "reason": f"Exceeded max ZIP items limit ({MAX_ZIP_ITEMS}).",
-                        }
-                    )
-                    continue
-
-                if not isinstance(raw_item, dict):
-                    category_manifest["skipped"].append({"index": index, "reason": "Invalid result item payload."})
-                    continue
-
-                s3_uri = str(raw_item.get(source_field) or "").strip()
-                if not s3_uri:
-                    category_manifest["skipped"].append(
-                        {"index": index, "reason": f"Missing `{source_field}` in result item."}
-                    )
-                    continue
-
-                try:
-                    object_bytes = aws_service.download_s3_uri(s3_uri)
-                except Exception as exc:
-                    logger.warning("ZIP download skipped for %s (%s): %s", category, s3_uri, exc)
-                    category_manifest["skipped"].append(
-                        {"index": index, "reason": f"Unable to download source object: {s3_uri}"}
-                    )
-                    continue
-
-                downloaded_source_bytes += len(object_bytes)
-                if downloaded_source_bytes > MAX_ZIP_SOURCE_BYTES:
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            f"ZIP source size exceeded limit of {MAX_ZIP_SOURCE_BYTES_MB} MB. "
-                            "Reduce selected images and retry."
-                        ),
-                    )
-
-                original_name = str(raw_item.get("renamed_file_name") or raw_item.get("file_name") or "").strip()
-                fallback_name = f"{category}_{index:03d}.jpg"
-                archive_name = sanitize_archive_filename(original_name, fallback_name)
-                archive_path = f"{category}/{archive_name}"
-
-                suffix = 1
-                while archive_path in archive_names:
-                    stem = Path(archive_name).stem
-                    ext = Path(archive_name).suffix or ".jpg"
-                    archive_name = sanitize_archive_filename(f"{stem}_{suffix}{ext}", fallback_name)
-                    archive_path = f"{category}/{archive_name}"
-                    suffix += 1
-
-                archive_names.add(archive_path)
-                archive.writestr(archive_path, object_bytes)
-                downloaded_count += 1
-                category_manifest["downloaded"] += 1
-
-        if include_manifest:
-            manifest["downloaded_files"] = downloaded_count
-            archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+    # boto3 is synchronous; keep these reads off the event loop.
+    temp_path, downloaded_count = await run_in_threadpool(
+        build_results_zip,
+        categories=categories,
+        results=results,
+        source=source,
+        include_manifest=include_manifest,
+        request_id=request_id,
+    )
 
     if downloaded_count == 0:
-        raise HTTPException(status_code=400, detail="No downloadable S3 objects found in the provided results.")
+        Path(temp_path).unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail="No downloadable S3 objects found in the provided results.",
+        )
 
-    zip_buffer.seek(0)
     headers = {
         "Content-Disposition": f'attachment; filename="{download_file_name}"',
-        REQUEST_ID_HEADER: current_request_id(),
+        "Content-Length": str(Path(temp_path).stat().st_size),
+        REQUEST_ID_HEADER: request_id,
     }
-    return Response(content=zip_buffer.getvalue(), media_type="application/zip", headers=headers)
+    return StreamingResponse(
+        stream_and_remove(temp_path),
+        media_type="application/zip",
+        headers=headers,
+    )
 
 
 @app.post("/upload/async")
@@ -1605,7 +1808,7 @@ async def upload_images_async(files: List[UploadFile] = File(...)) -> Dict[str, 
             len(valid_payloads),
             small_batch_bytes,
         )
-        results = process_upload_payloads(payloads)
+        results = await run_in_threadpool(process_upload_payloads, payloads)
         results["request_id"] = current_request_id()
         return results
 
