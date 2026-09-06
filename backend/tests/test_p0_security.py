@@ -102,3 +102,30 @@ class TestD3DecompressionBomb:
             app_main.decode_image(encode_png(4000, 4000))
 
         assert calls == [], "cv2.imdecode must not be reached for an oversized image"
+
+
+class TestD3FallbackPaths:
+    """The paths the pre-decode probe cannot cover must still be bounded."""
+
+    def test_pil_guard_tracks_our_budget(self, app_main):
+        """Setting Image.MAX_IMAGE_PIXELS to None would disable it entirely."""
+        from PIL import Image
+
+        assert Image.MAX_IMAGE_PIXELS == app_main.MAX_IMAGE_PIXELS
+
+    def test_unparseable_header_is_still_bounded_after_decode(self, app_main, monkeypatch):
+        """When PIL cannot probe, the post-decode backstop must still reject."""
+        monkeypatch.setattr(app_main, "MAX_IMAGE_PIXELS", 1_000_000)
+        monkeypatch.setattr(
+            app_main.Image, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("no plugin"))
+        )
+
+        with pytest.raises(ValueError, match="too large"):
+            app_main.decode_image(encode_png(4000, 4000))
+
+    def test_probe_failure_does_not_reject_valid_images(self, app_main, monkeypatch, jpeg_bytes):
+        monkeypatch.setattr(
+            app_main.Image, "open", lambda *a, **k: (_ for _ in ()).throw(OSError("no plugin"))
+        )
+
+        assert app_main.decode_image(jpeg_bytes).shape[:2] == (240, 240)

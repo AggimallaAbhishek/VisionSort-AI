@@ -18,7 +18,7 @@ import uuid
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -42,8 +42,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Keep PIL's built-in bomb guard from firing before ours, and from being laxer.
-Image.MAX_IMAGE_PIXELS = None
+# Aligned with MAX_IMAGE_PIXELS once config is read (see below).
 
 
 def _detect_total_memory_mb() -> int:
@@ -65,6 +64,9 @@ MAX_IMAGE_WIDTH = int(os.getenv("MAX_IMAGE_WIDTH", "1024"))
 # expands to 1.2 GB of uint8 BGR, which OOM-kills a small instance before any
 # size limit applies. 40 MP covers any phone or DSLR photo.
 MAX_IMAGE_PIXELS = max(0, int(os.getenv("MAX_IMAGE_PIXELS", "40000000")))
+# Keep PIL's own bomb guard in step with ours so the fallback decoder in
+# decode_image is covered too. Setting it to None would disable it entirely.
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS or None
 PREVIEW_MAX_WIDTH = int(os.getenv("PREVIEW_MAX_WIDTH", "640"))
 PREVIEW_JPEG_QUALITY = max(30, min(95, int(os.getenv("PREVIEW_JPEG_QUALITY", "70"))))
 INCLUDE_PREVIEW_DATA_URL = os.getenv("INCLUDE_PREVIEW_DATA_URL", "true").lower() == "true"
@@ -100,6 +102,15 @@ JOB_RETENTION_MINUTES = max(5, int(os.getenv("JOB_RETENTION_MINUTES", "60")))
 # many requests. Duplicate hashes and the filename counter must span them.
 SESSION_RETENTION_SECONDS = max(60, int(os.getenv("SESSION_RETENTION_SECONDS", "1800")))
 MAX_TRACKED_SESSIONS = max(16, int(os.getenv("MAX_TRACKED_SESSIONS", "500")))
+# One session's hash list must not grow without bound: a client may post unlimited
+# batches under a single id.
+MAX_SESSION_HASHES = max(16, int(os.getenv("MAX_SESSION_HASHES", "400")))
+# Overflow eviction only touches sessions idle at least this long, so a live upload
+# is never evicted out from under itself.
+SESSION_EVICTION_GRACE_SECONDS = max(10, int(os.getenv("SESSION_EVICTION_GRACE_SECONDS", "120")))
+ZIP_STREAM_CHUNK_BYTES = 256 * 1024
+ZIP_SPOOL_PREFIX = "visionsort_zip_"
+ZIP_SPOOL_MAX_AGE_SECONDS = max(60, int(os.getenv("ZIP_SPOOL_MAX_AGE_SECONDS", "900")))
 ASYNC_INLINE_FAST_MAX_FILES = max(0, int(os.getenv("ASYNC_INLINE_FAST_MAX_FILES", "2")))
 ASYNC_INLINE_FAST_MAX_BYTES_MB = max(0, int(os.getenv("ASYNC_INLINE_FAST_MAX_BYTES_MB", "5")))
 ASYNC_INLINE_FAST_MAX_BYTES = ASYNC_INLINE_FAST_MAX_BYTES_MB * 1024 * 1024
@@ -691,8 +702,9 @@ def ensure_decodable_size(raw_bytes: bytes) -> None:
     except Image.DecompressionBombError as exc:
         raise ValueError("Image is too large to decode safely.") from exc
     except Exception:
-        # Unknown to PIL but possibly decodable by OpenCV. The post-decode check below
-        # still bounds this path.
+        # PIL cannot parse the header, so the decoded size is genuinely unknowable
+        # here. OpenCV may still decode it; the post-decode check in decode_image is
+        # the backstop for that path.
         return
 
     pixels = int(width) * int(height)
@@ -1230,20 +1242,31 @@ def normalize_session_id(raw_session_id: Any) -> str:
 
 
 def _evict_expired_sessions_unlocked() -> None:
-    cutoff = time.time() - SESSION_RETENTION_SECONDS
-    for session_id in [sid for sid, entry in upload_sessions.items() if entry["updated_unix"] < cutoff]:
-        upload_sessions.pop(session_id, None)
-
-    # Hard cap so a flood of ids cannot grow the registry without bound.
-    overflow = len(upload_sessions) - MAX_TRACKED_SESSIONS
-    if overflow > 0:
-        oldest = sorted(upload_sessions.items(), key=lambda item: item[1]["updated_unix"])
-        for session_id, _ in oldest[:overflow]:
+    """Drop stale sessions. A session with work in flight is never evicted."""
+    now = time.time()
+    for session_id, entry in list(upload_sessions.items()):
+        if entry["active"] == 0 and entry["updated_unix"] < now - SESSION_RETENTION_SECONDS:
             upload_sessions.pop(session_id, None)
+
+    # Hard cap so a flood of ids cannot grow the registry without bound. Evicting a
+    # live session would reset its filename counter and reintroduce the collision the
+    # session exists to prevent, so only idle entries are eligible.
+    overflow = len(upload_sessions) - MAX_TRACKED_SESSIONS
+    if overflow <= 0:
+        return
+
+    evictable = [
+        (session_id, entry)
+        for session_id, entry in upload_sessions.items()
+        if entry["active"] == 0 and entry["updated_unix"] < now - SESSION_EVICTION_GRACE_SECONDS
+    ]
+    evictable.sort(key=lambda item: item[1]["updated_unix"])
+    for session_id, _ in evictable[:overflow]:
+        upload_sessions.pop(session_id, None)
 
 
 def acquire_upload_session(session_id: str) -> Dict[str, Any] | None:
-    """Fetch or create the shared state for a session, evicting stale entries first."""
+    """Check out a session, marking it in flight so eviction cannot reclaim it."""
     if not session_id:
         return None
 
@@ -1251,21 +1274,86 @@ def acquire_upload_session(session_id: str) -> Dict[str, Any] | None:
         _evict_expired_sessions_unlocked()
         session = upload_sessions.get(session_id)
         if session is None:
-            session = {"hashes": [], "next_index": 1, "updated_unix": time.time()}
+            session = {
+                "hashes": [],
+                "next_index": 1,
+                "updated_unix": time.time(),
+                "active": 0,
+                "lock": RLock(),
+                "last_batch_key": "",
+                "last_batch_start": (0, 1),
+            }
             upload_sessions[session_id] = session
-        else:
-            session["updated_unix"] = time.time()
+        session["updated_unix"] = time.time()
+        session["active"] += 1
         return session
+
+
+def release_upload_session(session: Dict[str, Any] | None) -> None:
+    """Return a checked-out session to the registry."""
+    if session is None:
+        return
+
+    with upload_sessions_lock:
+        session["active"] = max(0, session["active"] - 1)
+        session["updated_unix"] = time.time()
+
+
+def begin_session_batch(session: Dict[str, Any], batch_key: str) -> None:
+    """Make a re-sent batch idempotent and keep the hash list bounded.
+
+    The frontend retries a batch after a client-side timeout while the server may have
+    already processed it. Without this, the retry's own images match the hashes the
+    first attempt recorded and come back flagged as duplicates.
+    """
+    hashes = session["hashes"]
+
+    if batch_key and batch_key == session["last_batch_key"]:
+        hash_start, index_start = session["last_batch_start"]
+        del hashes[hash_start:]
+        session["next_index"] = index_start
+
+    overflow = len(hashes) - MAX_SESSION_HASHES
+    if overflow > 0:
+        del hashes[:overflow]
+
+    session["last_batch_key"] = batch_key
+    session["last_batch_start"] = (len(hashes), session["next_index"])
 
 
 def process_upload_payloads(
     payloads: List[UploadPayload],
     progress_hook: ProgressHook | None = None,
     session_id: str = "",
+    batch_key: str = "",
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Process image payloads and return categorized results."""
-    results = build_results_template()
+    """Process a batch, serializing the batches that share one session.
+
+    Duplicate hashes and the filename counter are shared mutable state, so two batches
+    of the same session must not interleave. Sessions do not contend with each other.
+    """
     session = acquire_upload_session(normalize_session_id(session_id))
+    try:
+        if session is None:
+            return _process_batch(payloads, progress_hook, None)
+
+        with session["lock"]:
+            begin_session_batch(session, str(batch_key or "").strip()[:64])
+            return _process_batch(payloads, progress_hook, session)
+    finally:
+        release_upload_session(session)
+
+
+def _process_batch(
+    payloads: List[UploadPayload],
+    progress_hook: ProgressHook | None,
+    session: Dict[str, Any] | None,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Process image payloads and return categorized results.
+
+    Callers must hold the session lock when `session` is not None.
+    """
+    results = build_results_template()
     # Without a session the caller's batches cannot be linked, so dedupe is batch-local
     # and filenames need a discriminator to stay unique across requests.
     seen_hashes: List[Any] = session["hashes"] if session else []
@@ -1372,10 +1460,8 @@ def process_upload_payloads(
 
             renamed_extension = resolve_extension(content_type, original_file_name)
             if session:
-                with upload_sessions_lock:
-                    file_index = session["next_index"]
-                    session["next_index"] = file_index + 1
-                    session["updated_unix"] = time.time()
+                file_index = session["next_index"]
+                session["next_index"] = file_index + 1
             else:
                 file_index = processed_count
             renamed_file_name = (
@@ -1627,11 +1713,6 @@ async def upload_images(
     results = await run_in_threadpool(process_upload_payloads, payloads, session_id=session_id)
     results["request_id"] = current_request_id()
     return results
-
-
-ZIP_STREAM_CHUNK_BYTES = 256 * 1024
-ZIP_SPOOL_PREFIX = "visionsort_zip_"
-ZIP_SPOOL_MAX_AGE_SECONDS = max(60, int(os.getenv("ZIP_SPOOL_MAX_AGE_SECONDS", "900")))
 
 
 def sweep_abandoned_zip_spools() -> None:
